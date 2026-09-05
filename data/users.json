@@ -1,0 +1,22 @@
+[
+  {
+    "id": "usr-1788597003649-523",
+    "name": "sankar",
+    "cpsNo": "4343",
+    "mobileNo": "976543456787654345",
+    "userType": "admin",
+    "aadharNumber": "567876545654",
+    "isSuperAdmin": false,
+    "createdAt": "2026-09-05T08:30:03.649Z"
+  },
+  {
+    "id": "usr-subash-superadmin",
+    "name": "subash",
+    "cpsNo": "1234",
+    "mobileNo": "9500466927",
+    "userType": "admin",
+    "aadharNumber": "1234",
+    "isSuperAdmin": true,
+    "createdAt": "2025-01-01T00:00:00.000Z"
+  }
+]

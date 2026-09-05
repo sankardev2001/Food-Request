@@ -1,0 +1,6 @@
+{
+  "name": "Food Requester Site",
+  "description": "Food request management portal for employees and administrators with live data collection, Excel spreadsheet viewing, and download.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
