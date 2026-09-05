@@ -91,13 +91,13 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
       <div className="w-full max-w-md relative z-10">
         {/* Excel Tab Pill Visual */}
         <div className="flex items-center gap-1.5 mb-2 px-3">
-          <div className="bg-white/60 backdrop-blur-xl text-emerald-800 text-xs font-bold px-4 py-1.5 rounded-t-2xl border-t border-x border-white/60 shadow-sm flex items-center gap-2">
+          {/* <div className="bg-white/60 backdrop-blur-xl text-emerald-800 text-xs font-bold px-4 py-1.5 rounded-t-2xl border-t border-x border-white/60 shadow-sm flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block animate-pulse"></span>
             Sheet: Log in
           </div>
           <div className="text-[11px] text-slate-500 font-mono">
             data in - User site | data collect - admin site
-          </div>
+          </div> */}
         </div>
 
         {/* Login Box - styled with Frosted Glass aesthetic */}
@@ -129,11 +129,10 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
                     setRole('employer');
                     setError(null);
                   }}
-                  className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                    role === 'employer'
+                  className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-xs font-bold transition-all cursor-pointer ${role === 'employer'
                       ? 'bg-emerald-500 text-white shadow-md shadow-emerald-500/25'
                       : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
-                  }`}
+                    }`}
                 >
                   <User className="w-4 h-4" />
                   <span>Employer</span>
@@ -146,11 +145,10 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
                     setRole('admin');
                     setError(null);
                   }}
-                  className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                    role === 'admin'
+                  className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-xs font-bold transition-all cursor-pointer ${role === 'admin'
                       ? 'bg-indigo-600 text-white shadow-md shadow-indigo-500/25'
                       : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
-                  }`}
+                    }`}
                 >
                   <Shield className="w-4 h-4" />
                   <span>Admin</span>
@@ -236,8 +234,8 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
 
               {/* Admin Passcode (only shown if admin role selected) */}
               {role === 'admin' && (
-                <div className="p-3.5 rounded-2xl bg-amber-500/10 backdrop-blur-md border border-amber-500/25 space-y-1.5 shadow-xs">
-                  <label className="block text-xs font-bold uppercase tracking-wider text-amber-900">
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
                     Admin Passcode <span className="text-rose-500">*</span>
                   </label>
                   <div className="relative">
@@ -247,12 +245,9 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
                       value={passcode}
                       onChange={(e) => setPasscode(e.target.value)}
                       placeholder="Enter Admin Passcode"
-                      className="w-full px-4 py-2 rounded-xl border border-white/80 bg-white/90 backdrop-blur-sm text-sm font-medium focus:outline-none focus:border-amber-500 focus:ring-4 focus:ring-amber-500/15 text-slate-800 placeholder:text-slate-400 shadow-xs transition-all"
+                      className="w-full px-4 py-2.5 rounded-xl border border-white/70 bg-white/70 backdrop-blur-sm text-sm font-medium text-slate-800 placeholder:text-slate-400 focus:outline-none focus:bg-white focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/15 shadow-xs transition-all"
                     />
                   </div>
-                  <p className="text-[11px] text-amber-900 font-medium">
-                    Default demo passcode is: <span className="font-mono font-bold bg-amber-100 px-1.5 py-0.5 rounded">admin123</span>
-                  </p>
                 </div>
               )}
 
@@ -275,24 +270,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
             </form>
 
             {/* Demo Quick Fills for ease of testing */}
-            <div className="mt-6 pt-4 border-t border-white/40">
-              <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider text-center mb-2.5">
-                Seeded Super Admin Credentials
-              </div>
-              <div className="flex flex-col gap-2">
-                <button
-                  type="button"
-                  id="btn-quick-fill-admin"
-                  onClick={() => handleQuickFill('admin')}
-                  className="w-full py-2.5 px-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 backdrop-blur-md text-xs font-bold text-emerald-900 transition-all text-center cursor-pointer shadow-xs flex items-center justify-center gap-1.5"
-                >
-                  <span>⚡ Fill Super Admin (subash • CPS: 1234 • 9500466927)</span>
-                </button>
-              </div>
-              <p className="text-[10px] text-slate-500 text-center mt-2.5 leading-relaxed">
-                Admins can create new employee accounts in the <strong>Employees & Users</strong> console.
-              </p>
-            </div>
+
           </div>
         </div>
       </div>

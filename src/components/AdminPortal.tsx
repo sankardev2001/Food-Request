@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { UserProfile, FoodRequest, FoodStats, FoodType, MealType } from '../types';
 import { ExcelGridViewer } from './ExcelGridViewer';
 import { UserManagement } from './UserManagement';
-import { MongoConnectionCard } from './MongoConnectionCard';
 import {
   FileSpreadsheet,
   PlusCircle,
@@ -197,20 +196,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ user, onOpenDeployGuid
               <Users className="w-4 h-4 text-amber-300" />
               <span>Employees & Users</span>
             </button>
-
-            <button
-              type="button"
-              id="admin-tab-mongodb"
-              onClick={() => setActiveTab('mongodb')}
-              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl font-bold transition-all cursor-pointer ${
-                activeTab === 'mongodb'
-                  ? 'bg-emerald-700 text-white shadow-md'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
-              }`}
-            >
-              <Database className="w-4 h-4 text-emerald-300" />
-              <span>MongoDB URI</span>
-            </button>
           </div>
 
           <button
@@ -308,10 +293,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ user, onOpenDeployGuid
 
       {activeTab === 'users' && (
         <UserManagement currentCps={user.cpsNo} />
-      )}
-
-      {activeTab === 'mongodb' && (
-        <MongoConnectionCard />
       )}
 
       {activeTab === 'add-form' && (
@@ -439,28 +420,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ user, onOpenDeployGuid
         </div>
       )}
 
-      {/* Cloud & Vercel deployment teaser footer with Frosted Glass styling */}
-      <div className="p-5 rounded-[2.5rem] bg-gradient-to-r from-slate-900/85 via-indigo-950/85 to-slate-900/85 backdrop-blur-xl text-white flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xl border border-white/20">
-        <div className="flex items-center gap-3.5">
-          <div className="w-10 h-10 rounded-2xl bg-emerald-500/80 backdrop-blur-md flex items-center justify-center text-white shrink-0 shadow-md">
-            <Cloud className="w-5 h-5" />
-          </div>
-          <div>
-            <h4 className="font-bold text-sm">Need to deploy to Vercel with free MongoDB / Firebase?</h4>
-            <p className="text-xs text-slate-300 mt-0.5">
-              The project is pre-configured with `vercel.json` and serverless API endpoints.
-            </p>
-          </div>
-        </div>
-
-        <button
-          type="button"
-          onClick={onOpenDeployGuide}
-          className="px-4 py-2.5 bg-white/90 hover:bg-white text-slate-900 font-bold text-xs rounded-xl transition-all shrink-0 shadow-md cursor-pointer backdrop-blur-md"
-        >
-          View Free Deployment Guide →
-        </button>
-      </div>
     </div>
   );
 };

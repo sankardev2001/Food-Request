@@ -35,7 +35,7 @@ export const Navbar: React.FC<NavbarProps> = ({ user, onLogout, onOpenDeployGuid
 
           {/* User Info & Actions */}
           <div className="flex items-center gap-3">
-            {user ? (
+            {user && (
               <>
                 <div className="flex items-center gap-3 bg-white/60 backdrop-blur-md py-1.5 px-3.5 rounded-2xl border border-white/60 text-sm shadow-xs">
                   <div className="w-7 h-7 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-500 border border-white flex items-center justify-center text-white font-semibold text-xs shadow-xs">
@@ -62,17 +62,6 @@ export const Navbar: React.FC<NavbarProps> = ({ user, onLogout, onOpenDeployGuid
 
                 <button
                   type="button"
-                  id="btn-open-deploy-guide"
-                  onClick={onOpenDeployGuide}
-                  className="hidden sm:inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-slate-700 bg-white/60 hover:bg-white/90 backdrop-blur-md border border-white/60 rounded-xl shadow-xs transition-all cursor-pointer"
-                  title="Deployment instructions for Vercel and MongoDB/Firebase"
-                >
-                  <Cloud className="w-3.5 h-3.5 text-emerald-600" />
-                  <span>Deploy & DB Guide</span>
-                </button>
-
-                <button
-                  type="button"
                   id="btn-logout"
                   onClick={onLogout}
                   className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-rose-700 bg-rose-500/10 hover:bg-rose-500/20 backdrop-blur-md border border-rose-200/70 rounded-xl transition-all cursor-pointer"
@@ -82,16 +71,6 @@ export const Navbar: React.FC<NavbarProps> = ({ user, onLogout, onOpenDeployGuid
                   <span className="hidden sm:inline">Logout</span>
                 </button>
               </>
-            ) : (
-              <button
-                type="button"
-                id="btn-open-deploy-guide-loggedout"
-                onClick={onOpenDeployGuide}
-                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-slate-700 bg-white/60 hover:bg-white/90 backdrop-blur-md border border-white/60 rounded-xl shadow-xs transition-all cursor-pointer"
-              >
-                <Cloud className="w-3.5 h-3.5 text-emerald-600" />
-                <span>Vercel / DB Guide</span>
-              </button>
             )}
           </div>
         </div>
