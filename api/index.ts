@@ -2,7 +2,46 @@ import express, { Request, Response } from 'express';
 import cors from 'cors';
 import * as XLSX from 'xlsx';
 import { MongoClient } from 'mongodb';
-import { getFirebaseAdminDb } from '../src/firebase-admin';
+import { initializeApp, getApps, cert, App } from 'firebase-admin/app';
+import { getDatabase } from 'firebase-admin/database';
+
+let firebaseAdminApp: App | null = null;
+let fbInitialized = false;
+
+export const getFirebaseAdminDb = () => {
+  if (!fbInitialized) {
+    try {
+      const serviceAccountRaw = process.env.FIREBASE_SERVICE_ACCOUNT;
+      const databaseURL = process.env.VITE_FIREBASE_DATABASE_URL;
+
+      if (serviceAccountRaw && databaseURL) {
+        const serviceAccount = JSON.parse(serviceAccountRaw);
+        
+        // Fix for dotenv not unescaping \n in the private key
+        if (serviceAccount.private_key) {
+          serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+        }
+        
+        if (!getApps().length) {
+          firebaseAdminApp = initializeApp({
+            credential: cert(serviceAccount),
+            databaseURL: databaseURL
+          });
+          console.log('Firebase Admin initialized successfully in Serverless.');
+        } else {
+          firebaseAdminApp = getApps()[0]!;
+        }
+      } else {
+        console.warn('Firebase Admin NOT initialized. Missing FIREBASE_SERVICE_ACCOUNT or VITE_FIREBASE_DATABASE_URL in environment.');
+      }
+    } catch (error) {
+      console.error('Failed to initialize Firebase Admin:', error);
+    }
+    fbInitialized = true;
+  }
+
+  return firebaseAdminApp ? getDatabase(firebaseAdminApp) : null;
+};
 
 const app = express();
 
