@@ -2,6 +2,7 @@ import express, { Request, Response } from 'express';
 import cors from 'cors';
 import * as XLSX from 'xlsx';
 import { MongoClient } from 'mongodb';
+import { getFirebaseAdminDb } from './firebase-admin';
 
 const app = express();
 
@@ -13,6 +14,7 @@ export interface AppUserDoc {
   name: string;
   cpsNo: string;
   mobileNo: string;
+  password?: string;
   userType: 'employer' | 'admin';
   aadharNumber: string;
   isSuperAdmin?: boolean;
@@ -39,6 +41,7 @@ const SEED_SUPER_ADMIN: AppUserDoc = {
   name: 'subash',
   cpsNo: '1234',
   mobileNo: '9500466927',
+  password: '1234',
   userType: 'admin',
   aadharNumber: '1234',
   isSuperAdmin: true,
@@ -58,6 +61,15 @@ async function getMongoDb(overrideUri?: string) {
     return null;
   }
   try {
+    if (mongoClient && (!overrideUri || overrideUri === currentMongoUri)) {
+      try {
+        await mongoClient.db('admin').command({ ping: 1 });
+      } catch (err) {
+        // Topology is likely closed or connection lost
+        mongoClient = null;
+      }
+    }
+
     if (!mongoClient || (overrideUri && overrideUri !== currentMongoUri)) {
       if (mongoClient) {
         try { await mongoClient.close(); } catch {}
@@ -261,17 +273,16 @@ app.post('/api/db/seed', async (req: Request, res: Response) => {
 
 // Auth Login
 app.post('/api/auth/login', async (req: Request, res: Response) => {
-  const { name, cpsNo, mobileNo, role, passcode } = req.body;
-  if (!name || !cpsNo || !mobileNo) {
-    return res.status(400).json({ error: 'Name, CPS No, and Mobile No are required.' });
+  const { mobileNo, password } = req.body;
+  if (!mobileNo || !password) {
+    return res.status(400).json({ error: 'Mobile No and Password are required.' });
   }
 
-  const cleanCps = String(cpsNo).trim().toUpperCase();
   const cleanMobile = String(mobileNo).trim();
-  const selectedRole = role === 'admin' ? 'admin' : 'employer';
+  const cleanPassword = String(password).trim().toUpperCase();
 
   // Check super admin subash
-  if (cleanCps === '1234' && (cleanMobile === '9500466927' || cleanMobile === '1234')) {
+  if (cleanMobile === '9500466927' && cleanPassword === '1234') {
     return res.json({
       success: true,
       user: {
@@ -288,17 +299,15 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
 
   const allUsers = await getAllUsers();
   const user = allUsers.find(
-    (u) => u.cpsNo.toUpperCase() === cleanCps && u.mobileNo.trim() === cleanMobile
+    (u) => 
+      u.mobileNo.trim() === cleanMobile && 
+      (u.password === password || (!u.password && u.cpsNo.toUpperCase() === cleanPassword))
   );
 
   if (!user) {
     return res.status(401).json({
-      error: `User with CPS No "${cleanCps}" & Mobile "${cleanMobile}" not found in employee directory.`,
+      error: `Invalid mobile number or password.`,
     });
-  }
-
-  if (selectedRole === 'admin' && user.userType !== 'admin') {
-    return res.status(403).json({ error: 'User does not have Administrator privileges.' });
   }
 
   res.json({
@@ -324,8 +333,8 @@ app.get('/api/users', async (req: Request, res: Response) => {
 
 // POST /api/users
 app.post('/api/users', async (req: Request, res: Response) => {
-  const { name, cpsNo, mobileNo, userType, aadharNumber } = req.body;
-  if (!name || !cpsNo || !mobileNo || !userType || !aadharNumber) {
+  const { name, cpsNo, mobileNo, password, userType, aadharNumber } = req.body;
+  if (!name || !cpsNo || !mobileNo || !password || !userType || !aadharNumber) {
     return res.status(400).json({ error: 'All fields are required.' });
   }
 
@@ -335,6 +344,7 @@ app.post('/api/users', async (req: Request, res: Response) => {
     name: name.trim(),
     cpsNo: cleanCps,
     mobileNo: String(mobileNo).trim(),
+    password: String(password).trim(),
     userType: userType === 'admin' ? 'admin' : 'employer',
     aadharNumber: String(aadharNumber).trim(),
     createdAt: new Date().toISOString(),
@@ -349,6 +359,31 @@ app.post('/api/users', async (req: Request, res: Response) => {
   res.status(201).json({ success: true, user: newUser });
 });
 
+// PUT /api/users/:id/password
+app.put('/api/users/:id/password', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { newPassword } = req.body;
+
+  if (!newPassword) {
+    return res.status(400).json({ error: 'New password is required.' });
+  }
+
+  const db = await getMongoDb();
+  if (db) {
+    await db.collection('users').updateOne(
+      { id },
+      { $set: { password: newPassword.trim() } }
+    );
+  }
+
+  const targetIdx = memoryUsers.findIndex((u) => u.id === id);
+  if (targetIdx >= 0) {
+    memoryUsers[targetIdx].password = newPassword.trim();
+  }
+
+  res.json({ success: true, message: 'Password updated.' });
+});
+
 // DELETE /api/users/:id
 app.delete('/api/users/:id', async (req: Request, res: Response) => {
   const { id } = req.params;
@@ -358,6 +393,17 @@ app.delete('/api/users/:id', async (req: Request, res: Response) => {
   }
   memoryUsers = memoryUsers.filter((u) => u.id !== id);
   res.json({ success: true, message: 'User deleted.' });
+});
+
+// GET /api/requests/recent
+app.get('/api/requests/recent', async (req: Request, res: Response) => {
+  const since = req.query.since as string;
+  if (!since) return res.status(400).json({ error: 'Since timestamp required.' });
+
+  const allRequests = await getAllRequests();
+  const newRequests = allRequests.filter((r) => r.createdAt > since);
+
+  res.json({ success: true, count: newRequests.length, requests: newRequests });
 });
 
 // GET /api/requests
@@ -431,6 +477,23 @@ app.post('/api/requests', async (req: Request, res: Response) => {
     await db.collection('food_requests').insertOne(newDoc);
   }
   memoryRequests.unshift(newDoc);
+
+  // Push real-time notification to Firebase
+  const adminDb = getFirebaseAdminDb();
+  if (adminDb) {
+    try {
+      await adminDb.ref('/admin_notifications').push({
+        id: newDoc.id,
+        createdAt: newDoc.createdAt,
+        type: newDoc.type,
+        beneficiaryName: newDoc.name,
+        requesterName: newDoc.requesterName,
+        requesterMobile: newDoc.requesterMobile
+      });
+    } catch (fbErr) {
+      console.error('Failed to push Firebase notification:', fbErr);
+    }
+  }
 
   res.status(201).json({ success: true, request: newDoc });
 });

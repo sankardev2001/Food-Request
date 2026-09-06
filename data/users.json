@@ -1,5 +1,27 @@
 [
   {
+    "id": "usr-1788683897481-83",
+    "name": "sankar",
+    "cpsNo": "123456789",
+    "mobileNo": "123456789",
+    "password": "123456789",
+    "userType": "admin",
+    "aadharNumber": "123456789",
+    "isSuperAdmin": false,
+    "createdAt": "2026-09-06T08:38:17.481Z"
+  },
+  {
+    "id": "usr-1788683728511-604",
+    "name": "ramesh",
+    "cpsNo": "987654321",
+    "mobileNo": "987654321",
+    "password": "987654321",
+    "userType": "employer",
+    "aadharNumber": "987654321",
+    "isSuperAdmin": false,
+    "createdAt": "2026-09-06T08:35:28.511Z"
+  },
+  {
     "id": "usr-1788597003649-523",
     "name": "sankar",
     "cpsNo": "4343",

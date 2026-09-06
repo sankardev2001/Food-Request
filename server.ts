@@ -8,6 +8,7 @@ import { MongoClient } from 'mongodb';
 import dotenv from 'dotenv';
 import { runMigration } from './scripts/migrate';
 import { runSeeding } from './scripts/seed';
+import { getFirebaseAdminDb } from './api/firebase-admin';
 
 dotenv.config();
 
@@ -24,6 +25,7 @@ export interface AppUserDoc {
   name: string;
   cpsNo: string;
   mobileNo: string;
+  password?: string;
   userType: 'employer' | 'admin';
   aadharNumber: string;
   isSuperAdmin?: boolean;
@@ -58,6 +60,7 @@ const SEED_SUPER_ADMIN: AppUserDoc = {
   name: 'subash',
   cpsNo: '1234',
   mobileNo: '9500466927',
+  password: '1234',
   userType: 'admin',
   aadharNumber: '1234',
   isSuperAdmin: true,
@@ -157,6 +160,7 @@ async function getAllUsers(): Promise<AppUserDoc[]> {
           name: d.name,
           cpsNo: d.cpsNo,
           mobileNo: d.mobileNo,
+          password: d.password,
           userType: d.userType,
           aadharNumber: d.aadharNumber,
           isSuperAdmin: d.isSuperAdmin,
@@ -421,25 +425,26 @@ app.post('/api/db/seed', async (req: Request, res: Response) => {
 // Login endpoint checking registered users in the 'users' table
 app.post('/api/auth/login', async (req: Request, res: Response) => {
   try {
-    const { name, cpsNo, mobileNo, role, passcode } = req.body;
+    const { mobileNo, password } = req.body;
 
-    if (!name || !cpsNo || !mobileNo) {
-      return res.status(400).json({ error: 'Name, CPS No, and Mobile No are required.' });
+    if (!mobileNo || !password) {
+      return res.status(400).json({ error: 'Mobile No and Password are required.' });
     }
 
-    const cleanCps = String(cpsNo).trim().toUpperCase();
     const cleanMobile = String(mobileNo).trim();
-    const selectedRole = role === 'admin' ? 'admin' : 'employer';
+    const cleanPassword = String(password).trim().toUpperCase();
 
     const allUsers = await getAllUsers();
 
     // Check if user exists in the users table
     const matchedUser = allUsers.find(
-      (u) => u.cpsNo.toUpperCase() === cleanCps && u.mobileNo.trim() === cleanMobile
+      (u) => 
+        u.mobileNo.trim() === cleanMobile && 
+        (u.password === password || (!u.password && u.cpsNo.toUpperCase() === cleanPassword))
     );
 
     // If super admin subash
-    if (cleanCps === '1234' && (cleanMobile === '9500466927' || cleanMobile === '1234')) {
+    if (cleanMobile === '9500466927' && cleanPassword === '1234') {
       const superAdminUser = {
         name: 'subash',
         cpsNo: '1234',
@@ -454,21 +459,8 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
 
     if (!matchedUser) {
       return res.status(401).json({
-        error: `User with CPS No "${cleanCps}" & Mobile "${cleanMobile}" is not registered in the User Table. Please ask Admin subash to add your employee profile in the Admin portal.`,
+        error: `Invalid mobile number or password.`,
       });
-    }
-
-    // Role check
-    if (selectedRole === 'admin') {
-      if (matchedUser.userType !== 'admin') {
-        return res.status(403).json({
-          error: `User "${matchedUser.name}" is registered as an Employee (Employer), not an Administrator. Please select Employer role to log in.`,
-        });
-      }
-      const requiredPasscode = process.env.ADMIN_PASSCODE || 'admin123';
-      if (passcode && passcode.trim() !== requiredPasscode && !matchedUser.isSuperAdmin) {
-        return res.status(401).json({ error: 'Invalid Admin passcode.' });
-      }
     }
 
     const userProfile = {
@@ -502,11 +494,11 @@ app.get('/api/users', async (req: Request, res: Response) => {
 // POST /api/users - Add employee or admin (Stored in users table)
 app.post('/api/users', async (req: Request, res: Response) => {
   try {
-    const { name, cpsNo, mobileNo, userType, aadharNumber } = req.body;
+    const { name, cpsNo, mobileNo, password, userType, aadharNumber } = req.body;
 
-    if (!name || !cpsNo || !mobileNo || !userType || !aadharNumber) {
+    if (!name || !cpsNo || !mobileNo || !password || !userType || !aadharNumber) {
       return res.status(400).json({
-        error: 'All fields (Name, CPS No, Mobile Number, User Type, Aadhar Number) are required.',
+        error: 'All fields (Name, CPS No, Mobile Number, Password, User Type, Aadhar Number) are required.',
       });
     }
 
@@ -526,6 +518,7 @@ app.post('/api/users', async (req: Request, res: Response) => {
       name: name.trim(),
       cpsNo: cleanCps,
       mobileNo: cleanMobile,
+      password: String(password).trim(),
       userType: userType === 'admin' ? 'admin' : 'employer',
       aadharNumber: String(aadharNumber).trim(),
       isSuperAdmin: false,
@@ -536,6 +529,32 @@ app.post('/api/users', async (req: Request, res: Response) => {
     res.status(201).json({ success: true, user: saved });
   } catch (error: any) {
     res.status(500).json({ error: 'Failed to create user in user table.' });
+  }
+});
+
+// PUT /api/users/:id/password - Update user password
+app.put('/api/users/:id/password', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { newPassword } = req.body;
+
+    if (!newPassword) {
+      return res.status(400).json({ error: 'New password is required.' });
+    }
+
+    const allUsers = await getAllUsers();
+    const target = allUsers.find((u) => u.id === id);
+
+    if (!target) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+
+    target.password = newPassword.trim();
+    await saveUser(target);
+
+    res.json({ success: true, message: `Password updated for ${target.name}.` });
+  } catch (error: any) {
+    res.status(500).json({ error: 'Failed to update password.' });
   }
 });
 
@@ -562,6 +581,21 @@ app.delete('/api/users/:id', async (req: Request, res: Response) => {
 });
 
 // ---------------- FOOD REQUESTS ENDPOINTS ----------------
+
+// GET /api/requests/recent - Polling endpoint
+app.get('/api/requests/recent', async (req: Request, res: Response) => {
+  try {
+    const since = req.query.since as string;
+    if (!since) return res.status(400).json({ error: 'Since timestamp required.' });
+
+    const allRequests = await getAllRequests();
+    const newRequests = allRequests.filter((r) => r.createdAt > since);
+
+    res.json({ success: true, count: newRequests.length, requests: newRequests });
+  } catch (error: any) {
+    res.status(500).json({ error: 'Failed to fetch recent requests.' });
+  }
+});
 
 // GET /api/requests - Get food requests with strict access control
 app.get('/api/requests', async (req: Request, res: Response) => {
@@ -654,6 +688,24 @@ app.post('/api/requests', async (req: Request, res: Response) => {
     };
 
     const saved = await saveRequest(newRequest);
+    
+    // Push real-time notification to Firebase
+    const adminDb = getFirebaseAdminDb();
+    if (adminDb) {
+      try {
+        await adminDb.ref('/admin_notifications').push({
+          id: saved.id,
+          createdAt: saved.createdAt,
+          type: saved.type,
+          beneficiaryName: saved.name,
+          requesterName: saved.requesterName,
+          requesterMobile: saved.requesterMobile
+        });
+      } catch (fbErr) {
+        console.error('Failed to push Firebase notification:', fbErr);
+      }
+    }
+
     res.status(201).json({ success: true, request: saved });
   } catch (error: any) {
     res.status(500).json({ error: 'Failed to save food request.' });

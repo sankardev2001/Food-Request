@@ -7,11 +7,8 @@ interface LoginPageProps {
 }
 
 export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
-  const [role, setRole] = useState<UserRole>('employer');
-  const [name, setName] = useState('');
-  const [cpsNo, setCpsNo] = useState('');
   const [mobileNo, setMobileNo] = useState('');
-  const [passcode, setPasscode] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -19,21 +16,13 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
     e.preventDefault();
     setError(null);
 
-    if (!name.trim()) {
-      setError('Please enter your full Name.');
-      return;
-    }
-    if (!cpsNo.trim()) {
-      setError('Please enter your CPS Number.');
-      return;
-    }
     if (!mobileNo.trim() || mobileNo.trim().length < 8) {
       setError('Please enter a valid Mobile Number (at least 8-10 digits).');
       return;
     }
 
-    if (role === 'admin' && !passcode.trim()) {
-      setError('Please enter Admin Passcode (Default: admin123).');
+    if (!password.trim()) {
+      setError('Please enter your Password.');
       return;
     }
 
@@ -43,11 +32,8 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: name.trim(),
-          cpsNo: cpsNo.trim().toUpperCase(),
           mobileNo: mobileNo.trim(),
-          role,
-          passcode: passcode.trim(),
+          password: password.trim(),
         }),
       });
 
@@ -67,17 +53,11 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
   const handleQuickFill = (type: UserRole) => {
     setError(null);
     if (type === 'admin') {
-      setRole('admin');
-      setName('subash');
-      setCpsNo('1234');
       setMobileNo('9500466927');
-      setPasscode('admin123');
+      setPassword('1234');
     } else {
-      setRole('employer');
-      setName('subash');
-      setCpsNo('1234');
       setMobileNo('9500466927');
-      setPasscode('');
+      setPassword('1234');
     }
   };
 
@@ -116,104 +96,8 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
           </div>
 
           <div className="p-6">
-            {/* Role Switcher */}
-            <div className="mb-6">
-              <label className="block text-xs font-bold uppercase tracking-wider text-slate-600 mb-2">
-                Select Login Type / Role
-              </label>
-              <div className="grid grid-cols-2 gap-2 p-1.5 bg-white/50 backdrop-blur-md rounded-2xl border border-white/60 shadow-inner">
-                <button
-                  type="button"
-                  id="role-btn-employer"
-                  onClick={() => {
-                    setRole('employer');
-                    setError(null);
-                  }}
-                  className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-xs font-bold transition-all cursor-pointer ${role === 'employer'
-                      ? 'bg-emerald-500 text-white shadow-md shadow-emerald-500/25'
-                      : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
-                    }`}
-                >
-                  <User className="w-4 h-4" />
-                  <span>Employer</span>
-                </button>
-
-                <button
-                  type="button"
-                  id="role-btn-admin"
-                  onClick={() => {
-                    setRole('admin');
-                    setError(null);
-                  }}
-                  className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-xs font-bold transition-all cursor-pointer ${role === 'admin'
-                      ? 'bg-indigo-600 text-white shadow-md shadow-indigo-500/25'
-                      : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
-                    }`}
-                >
-                  <Shield className="w-4 h-4" />
-                  <span>Admin</span>
-                </button>
-              </div>
-
-              <div className="mt-2 text-[11px] text-slate-600 flex items-center gap-1.5 px-1">
-                {role === 'employer' ? (
-                  <span className="text-emerald-700 font-semibold">
-                    ✓ Employer access: Can submit Food Requests only (no Excel view/download).
-                  </span>
-                ) : (
-                  <span className="text-indigo-700 font-semibold">
-                    ★ Admin access: Can add requests, view master Excel sheet & download.
-                  </span>
-                )}
-              </div>
-            </div>
-
-            {/* Error banner */}
-            {error && (
-              <div className="mb-4 p-3 rounded-xl bg-rose-500/10 backdrop-blur-md border border-rose-200 text-rose-700 text-xs flex items-start gap-2 shadow-xs">
-                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                <span>{error}</span>
-              </div>
-            )}
-
-            {/* Form Fields matching Screenshot 2 */}
+            {/* Form Fields */}
             <form onSubmit={handleSubmit} className="space-y-4">
-              {/* Name field */}
-              <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
-                  Name <span className="text-rose-500">*</span>
-                </label>
-                <div className="relative">
-                  <input
-                    type="text"
-                    id="login-name"
-                    required
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    placeholder="Enter your full name"
-                    className="w-full px-4 py-2.5 rounded-xl border border-white/70 bg-white/70 backdrop-blur-sm text-sm font-medium text-slate-800 placeholder:text-slate-400 focus:outline-none focus:bg-white focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/15 shadow-xs transition-all"
-                  />
-                </div>
-              </div>
-
-              {/* CPS No field */}
-              <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
-                  CPS No <span className="text-rose-500">*</span>
-                </label>
-                <div className="relative">
-                  <input
-                    type="text"
-                    id="login-cps"
-                    required
-                    value={cpsNo}
-                    onChange={(e) => setCpsNo(e.target.value.toUpperCase())}
-                    placeholder="e.g. CPS10992"
-                    className="w-full px-4 py-2.5 rounded-xl border border-white/70 bg-white/70 backdrop-blur-sm text-sm font-medium font-mono uppercase text-slate-800 placeholder:text-slate-400 focus:outline-none focus:bg-white focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/15 shadow-xs transition-all"
-                  />
-                </div>
-              </div>
-
               {/* Mobile No field */}
               <div>
                 <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
@@ -232,24 +116,23 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
                 </div>
               </div>
 
-              {/* Admin Passcode (only shown if admin role selected) */}
-              {role === 'admin' && (
-                <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
-                    Admin Passcode <span className="text-rose-500">*</span>
-                  </label>
-                  <div className="relative">
-                    <input
-                      type="password"
-                      id="login-passcode"
-                      value={passcode}
-                      onChange={(e) => setPasscode(e.target.value)}
-                      placeholder="Enter Admin Passcode"
-                      className="w-full px-4 py-2.5 rounded-xl border border-white/70 bg-white/70 backdrop-blur-sm text-sm font-medium text-slate-800 placeholder:text-slate-400 focus:outline-none focus:bg-white focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/15 shadow-xs transition-all"
-                    />
-                  </div>
+              {/* Password */}
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
+                  Password <span className="text-rose-500">*</span>
+                </label>
+                <div className="relative">
+                  <input
+                    type="password"
+                    id="login-password"
+                    required
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="Enter Password"
+                    className="w-full px-4 py-2.5 rounded-xl border border-white/70 bg-white/70 backdrop-blur-sm text-sm font-medium text-slate-800 placeholder:text-slate-400 focus:outline-none focus:bg-white focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/15 shadow-xs transition-all"
+                  />
                 </div>
-              )}
+              </div>
 
               {/* Submit Button */}
               <button
@@ -262,7 +145,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
                   <span>Logging in...</span>
                 ) : (
                   <>
-                    <span>Enter {role === 'admin' ? 'Admin Site' : 'Food Requester Form'}</span>
+                    <span>Login securely</span>
                     <ArrowRight className="w-4 h-4" />
                   </>
                 )}

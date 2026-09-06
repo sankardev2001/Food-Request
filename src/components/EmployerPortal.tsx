@@ -83,7 +83,7 @@ export const EmployerPortal: React.FC<EmployerPortalProps> = ({ user }) => {
 
       setSuccessMessage(`Food request for ${name} (${vegNonVeg}, ${type}) submitted successfully!`);
       // Reset form beneficiary name and aadhar for next potential entry, or keep default
-      setAadharNumber('');
+      // setAadharNumber(''); // removed because it's disabled now
       fetchMyRequests();
     } catch (err: any) {
       setErrorMessage(err.message || 'Submission failed. Please try again.');
@@ -158,9 +158,10 @@ export const EmployerPortal: React.FC<EmployerPortalProps> = ({ user }) => {
                     type="date"
                     id="employer-form-date"
                     required
+                    disabled
                     value={requestDate}
                     onChange={(e) => setRequestDate(e.target.value)}
-                    className="w-full px-4 py-2.5 rounded-xl border border-white/70 bg-white/70 backdrop-blur-sm text-sm font-medium text-slate-800 focus:outline-none focus:bg-white focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/15 shadow-xs transition-all"
+                    className="w-full px-4 py-2.5 rounded-xl border border-white/70 bg-white/40 backdrop-blur-sm text-sm font-medium text-slate-500 shadow-xs transition-all cursor-not-allowed"
                   />
                 </div>
 
@@ -170,22 +171,16 @@ export const EmployerPortal: React.FC<EmployerPortalProps> = ({ user }) => {
                     <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
                       * Name
                     </label>
-                    <button
-                      type="button"
-                      onClick={() => setName(user.name)}
-                      className="text-[11px] text-emerald-700 hover:text-emerald-800 font-bold cursor-pointer"
-                    >
-                      Use My Name ({user.name})
-                    </button>
                   </div>
                   <input
                     type="text"
                     id="employer-form-name"
                     required
+                    disabled
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     placeholder="Enter Employee / Beneficiary Name"
-                    className="w-full px-4 py-2.5 rounded-xl border border-white/70 bg-white/70 backdrop-blur-sm text-sm font-medium text-slate-800 placeholder:text-slate-400 focus:outline-none focus:bg-white focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/15 shadow-xs transition-all"
+                    className="w-full px-4 py-2.5 rounded-xl border border-white/70 bg-white/40 backdrop-blur-sm text-sm font-medium text-slate-500 placeholder:text-slate-400 shadow-xs transition-all cursor-not-allowed"
                   />
                 </div>
 
@@ -198,14 +193,15 @@ export const EmployerPortal: React.FC<EmployerPortalProps> = ({ user }) => {
                     type="text"
                     id="employer-form-aadhar"
                     required
+                    disabled
                     maxLength={12}
                     value={aadharNumber}
                     onChange={(e) => setAadharNumber(e.target.value.replace(/[^0-9]/g, ''))}
                     placeholder="e.g. 4821 (or full 12-digit Aadhar)"
-                    className="w-full px-4 py-2.5 rounded-xl border border-white/70 bg-white/70 backdrop-blur-sm text-sm font-mono font-medium text-slate-800 placeholder:text-slate-400 focus:outline-none focus:bg-white focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/15 shadow-xs transition-all"
+                    className="w-full px-4 py-2.5 rounded-xl border border-white/70 bg-white/40 backdrop-blur-sm text-sm font-mono font-medium text-slate-500 placeholder:text-slate-400 shadow-xs transition-all cursor-not-allowed"
                   />
                   <span className="text-[10px] text-slate-500 mt-1 block">
-                    Enter the first 4 digits or Aadhar reference number.
+                    Auto-selected from your profile.
                   </span>
                 </div>
 

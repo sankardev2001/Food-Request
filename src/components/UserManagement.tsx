@@ -13,6 +13,7 @@ import {
   Phone,
   CreditCard,
   Hash,
+  KeyRound,
 } from 'lucide-react';
 
 interface UserManagementProps {
@@ -30,6 +31,7 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentCps }) =>
   const [name, setName] = useState('');
   const [cpsNo, setCpsNo] = useState('');
   const [mobileNo, setMobileNo] = useState('');
+  const [password, setPassword] = useState('');
   const [userType, setUserType] = useState<UserRole>('employer');
   const [aadharNumber, setAadharNumber] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -58,8 +60,8 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentCps }) =>
     setErrorMessage(null);
     setActionMessage(null);
 
-    if (!name.trim() || !cpsNo.trim() || !mobileNo.trim() || !aadharNumber.trim()) {
-      setErrorMessage('Please fill in all required fields (Name, CPS No, Mobile No, Aadhar).');
+    if (!name.trim() || !cpsNo.trim() || !mobileNo.trim() || !password.trim() || !aadharNumber.trim()) {
+      setErrorMessage('Please fill in all required fields (Name, CPS No, Mobile No, Password, Aadhar).');
       return;
     }
 
@@ -72,6 +74,7 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentCps }) =>
           name: name.trim(),
           cpsNo: cpsNo.trim().toUpperCase(),
           mobileNo: mobileNo.trim(),
+          password: password.trim(),
           userType,
           aadharNumber: aadharNumber.trim(),
         }),
@@ -89,6 +92,7 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentCps }) =>
       setName('');
       setCpsNo('');
       setMobileNo('');
+      setPassword('');
       setAadharNumber('');
       setUserType('employer');
       fetchUsers();
@@ -120,6 +124,30 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentCps }) =>
       }
     } catch (e) {
       console.error('Delete error:', e);
+    }
+  };
+
+  const handleResetPassword = async (id: string, userName: string) => {
+    const newPassword = window.prompt(`Enter new password for ${userName}:`);
+    if (!newPassword || !newPassword.trim()) {
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/users/${id}/password`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ newPassword: newPassword.trim() }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setActionMessage(`Password updated successfully for ${userName}.`);
+        fetchUsers();
+      } else {
+        alert(data.error || 'Failed to update password.');
+      }
+    } catch (e) {
+      console.error('Update password error:', e);
     }
   };
 
@@ -292,6 +320,21 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentCps }) =>
                 />
               </div>
 
+              {/* Password */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
+                  * Password
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="Set initial password"
+                  className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-white/70 bg-white/70 backdrop-blur-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:bg-white focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/15 shadow-xs"
+                />
+              </div>
+
               {/* Aadhar Number */}
               <div>
                 <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
@@ -414,14 +457,24 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentCps }) =>
                             {isSuper ? (
                               <span className="text-[10px] text-slate-400 italic">Protected</span>
                             ) : (
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteUser(u.id, u.name, u.cpsNo)}
-                                className="p-1.5 rounded-lg text-rose-500 hover:text-rose-700 hover:bg-rose-500/10 transition-colors cursor-pointer"
-                                title={`Delete ${u.name}`}
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
+                              <div className="flex items-center justify-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => handleResetPassword(u.id, u.name)}
+                                  className="p-1.5 rounded-lg text-indigo-500 hover:text-indigo-700 hover:bg-indigo-500/10 transition-colors cursor-pointer"
+                                  title={`Change Password for ${u.name}`}
+                                >
+                                  <KeyRound className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteUser(u.id, u.name, u.cpsNo)}
+                                  className="p-1.5 rounded-lg text-rose-500 hover:text-rose-700 hover:bg-rose-500/10 transition-colors cursor-pointer"
+                                  title={`Delete ${u.name}`}
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
                             )}
                           </td>
                         </tr>

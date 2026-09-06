@@ -18,7 +18,20 @@ import {
   Sun,
   Moon,
   Cookie,
+  Bell,
+  X,
 } from 'lucide-react';
+import { database } from '../firebase';
+import { ref, onChildAdded, off } from 'firebase/database';
+
+interface NotificationItem {
+  id: string;
+  createdAt: string;
+  type: string;
+  beneficiaryName: string;
+  requesterName: string;
+  requesterMobile?: string;
+}
 
 interface AdminPortalProps {
   user: UserProfile;
@@ -31,6 +44,16 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ user, onOpenDeployGuid
   const [stats, setStats] = useState<FoodStats | null>(null);
   const [loading, setLoading] = useState(false);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [showDropdown, setShowDropdown] = useState(false);
+
+  // Initialize adminLastViewed on first mount if not present
+  useEffect(() => {
+    if (!localStorage.getItem('adminLastViewed')) {
+      localStorage.setItem('adminLastViewed', new Date().toISOString());
+    }
+  }, []);
 
   // Admin Food Request Form state
   const [formDate, setFormDate] = useState<string>(new Date().toISOString().slice(0, 10));
@@ -42,9 +65,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ user, onOpenDeployGuid
   const [type, setType] = useState<MealType>('Lunch');
   const [submittingForm, setSubmittingForm] = useState(false);
 
-  const fetchRequestsAndStats = async () => {
+  const fetchRequestsAndStats = async (artificialDelay = false) => {
     setLoading(true);
     try {
+      if (artificialDelay) {
+        await new Promise((resolve) => setTimeout(resolve, 600));
+      }
       // 1. Fetch all requests
       const res = await fetch(`/api/requests?role=admin`);
       const data = await res.json();
@@ -68,6 +94,52 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ user, onOpenDeployGuid
   useEffect(() => {
     fetchRequestsAndStats();
   }, []);
+
+  // Real-time Firebase Listener for new requests
+  useEffect(() => {
+    if (!database) {
+      console.warn('Firebase database not configured, real-time notifications disabled.');
+      return;
+    }
+
+    const notificationsRef = ref(database, '/admin_notifications');
+    
+    const unsubscribe = onChildAdded(notificationsRef, (snapshot) => {
+      const data = snapshot.val();
+      console.log('Firebase new notification received:', data);
+      if (data) {
+        const lastViewed = localStorage.getItem('adminLastViewed') || new Date().toISOString();
+        console.log('Comparing times - Request:', data.createdAt, 'LastViewed:', lastViewed);
+        if (data.createdAt > lastViewed) {
+          console.log('Request is newer! Incrementing badge.');
+          setUnreadCount((prev) => prev + 1);
+          setNotifications((prev) => [data, ...prev]);
+          // Optional: only fetch the table if we are on the excel tab or just silently refresh
+          fetchRequestsAndStats();
+        } else {
+          console.log('Request is older than last viewed time. Ignoring.');
+        }
+      }
+    });
+
+    return () => {
+      off(notificationsRef, 'child_added', unsubscribe);
+    };
+  }, []);
+
+  const markAsRead = () => {
+    if (unreadCount === 0) {
+      setActionMessage('No new notifications.');
+      setTimeout(() => setActionMessage(null), 2000);
+      return;
+    }
+    localStorage.setItem('adminLastViewed', new Date().toISOString());
+    setUnreadCount(0);
+    setNotifications([]);
+    setShowDropdown(false);
+    setActionMessage('Notifications marked as read.');
+    setTimeout(() => setActionMessage(null), 2000);
+  };
 
   const handleDeleteRequest = async (id: string) => {
     try {
@@ -137,7 +209,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ user, onOpenDeployGuid
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
       {/* Top Banner / Role Summary with Frosted Glass */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white/50 backdrop-blur-2xl p-6 rounded-[2.5rem] border border-white/60 shadow-xl">
+      <div className="relative z-50 flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white/50 backdrop-blur-2xl p-6 rounded-[2.5rem] border border-white/60 shadow-xl">
         <div>
           <div className="flex items-center gap-2.5">
             <h1 className="text-xl font-black text-slate-800 tracking-tight">
@@ -198,17 +270,115 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ user, onOpenDeployGuid
             </button>
           </div>
 
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setShowDropdown(!showDropdown)}
+              className={`relative p-2.5 rounded-xl border border-white/70 transition-all cursor-pointer backdrop-blur-md shadow-xs active:scale-95 ${
+                unreadCount > 0 ? 'bg-indigo-100 hover:bg-indigo-200 text-indigo-700' : 'bg-white/60 hover:bg-white/90 text-slate-700'
+              }`}
+              title="Notifications"
+            >
+              <Bell className={`w-4 h-4 ${unreadCount > 0 ? 'animate-bounce' : ''}`} />
+              {unreadCount > 0 && (
+                <span className="absolute -top-2 -right-2 flex h-5 w-5">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+                  <span className="relative flex rounded-full h-5 w-5 bg-rose-500 border-2 border-white text-[10px] font-bold text-white items-center justify-center">
+                    {unreadCount > 99 ? '99+' : unreadCount}
+                  </span>
+                </span>
+              )}
+            </button>
+
+            {/* Notifications Dropdown */}
+            {showDropdown && (
+              <div className="absolute right-0 mt-2 w-80 bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl border border-slate-200 overflow-hidden z-50 animate-in slide-in-from-top-2 fade-in duration-200">
+                <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-slate-50/50">
+                  <h3 className="font-bold text-slate-800 flex items-center gap-2">
+                    <Bell className="w-4 h-4 text-indigo-500" />
+                    New Requests
+                  </h3>
+                  <button 
+                    onClick={() => setShowDropdown(false)}
+                    className="p-1 hover:bg-slate-200 rounded-full text-slate-500 transition-colors cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+                
+                <div className="max-h-80 overflow-y-auto">
+                  {notifications.length === 0 ? (
+                    <div className="p-6 text-center text-slate-500 text-sm">
+                      <CheckCircle2 className="w-8 h-8 text-emerald-400 mx-auto mb-2" />
+                      You're all caught up!
+                    </div>
+                  ) : (
+                    <div className="flex flex-col">
+                      {notifications.map((notif, idx) => (
+                        <div key={idx} className="p-4 border-b border-slate-50 hover:bg-indigo-50/50 transition-colors">
+                          <div className="flex justify-between items-start mb-1">
+                            <span className="font-semibold text-slate-800 text-sm">{notif.type} Request</span>
+                            <span className="text-[10px] text-slate-500 bg-white px-2 py-0.5 rounded-full border border-slate-200">
+                              {new Date(notif.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          </div>
+                          <p className="text-xs text-slate-600 mt-1">
+                            <span className="font-medium text-slate-800">{notif.requesterName}</span> requested for <span className="font-medium">{notif.beneficiaryName}</span>.
+                          </p>
+                          {notif.requesterMobile && notif.requesterMobile !== 'N/A' && (
+                            <p className="text-xs text-slate-500 mt-1 flex items-center gap-1">
+                              📞 {notif.requesterMobile}
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                
+                {notifications.length > 0 && (
+                  <div className="p-3 bg-slate-50/80 border-t border-slate-100">
+                    <button
+                      onClick={markAsRead}
+                      className="w-full py-2 bg-white border border-slate-200 hover:border-indigo-300 hover:bg-indigo-50 rounded-xl text-sm font-semibold text-indigo-600 transition-all cursor-pointer"
+                    >
+                      Mark all as read
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
           <button
             type="button"
-            onClick={fetchRequestsAndStats}
+            onClick={() => fetchRequestsAndStats(true)}
             disabled={loading}
-            className="p-2.5 rounded-xl border border-white/70 bg-white/60 hover:bg-white/90 text-slate-700 transition-all cursor-pointer backdrop-blur-md shadow-xs"
+            className="p-2.5 rounded-xl border border-white/70 bg-white/60 hover:bg-white/90 text-slate-700 transition-all cursor-pointer backdrop-blur-md shadow-xs active:scale-95"
             title="Refresh database records"
           >
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           </button>
         </div>
       </div>
+
+      {/* Notification Banner */}
+      {unreadCount > 0 && (
+        <div className="mb-4 p-4 rounded-2xl bg-indigo-500/15 backdrop-blur-md border border-indigo-500/30 text-indigo-900 text-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xl animate-pulse">
+          <div className="flex items-center gap-3">
+            <Bell className="w-5 h-5 text-indigo-600 animate-bounce" />
+            <span className="font-bold">
+              You have {unreadCount} new food request(s) since your last check!
+            </span>
+          </div>
+          <button
+            onClick={markAsRead}
+            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold uppercase tracking-wider rounded-xl shadow-md transition-colors cursor-pointer shrink-0"
+          >
+            Mark as Read
+          </button>
+        </div>
+      )}
 
       {/* Action toast message */}
       {actionMessage && (
