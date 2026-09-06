@@ -8,7 +8,7 @@ import { MongoClient } from 'mongodb';
 import dotenv from 'dotenv';
 import { runMigration } from './scripts/migrate';
 import { runSeeding } from './scripts/seed';
-import { getFirebaseAdminDb } from './api/firebase-admin';
+import { getFirebaseAdminDb } from './src/firebase-admin';
 
 dotenv.config();
 

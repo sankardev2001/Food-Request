@@ -2,7 +2,7 @@ import express, { Request, Response } from 'express';
 import cors from 'cors';
 import * as XLSX from 'xlsx';
 import { MongoClient } from 'mongodb';
-import { getFirebaseAdminDb } from './firebase-admin';
+import { getFirebaseAdminDb } from '../src/firebase-admin';
 
 const app = express();
 
