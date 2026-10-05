@@ -15,7 +15,8 @@
     "sync:users": "tsx scripts/sync-users-to-mongo.ts",
     "db:setup": "tsx scripts/setup-db.ts",
     "preview": "vite preview",
-    "clean": "rm -rf dist server.js",
+    "clean": "rm -rf dist server.js api/index.js api/index.js.map",
+    "verify:vercel": "node scripts/verify-vercel-deploy.mjs",
     "lint": "tsc --noEmit"
   },
   "dependencies": {

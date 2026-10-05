@@ -1,6 +1,9 @@
 node_modules/
 build/
 dist/
+# Never commit — conflicts with api/index.ts on Vercel (same route as compiled output)
+api/index.js
+api/index.js.map
 coverage/
 .DS_Store
 *.log
