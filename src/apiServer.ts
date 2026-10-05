@@ -16,14 +16,14 @@ import {
   upsertUsersToMongo,
   upsertFoodRequestsToMongo,
   DatabaseUnavailableError,
-} from '../src/mongoHelpers';
-import { requireAuth, sanitizeUserForClient } from '../src/authSecurity';
+} from './mongoHelpers';
+import { requireAuth, sanitizeUserForClient } from './authSecurity';
 import {
   handleLoginRequest,
   handleLogoutRequest,
   handleMeRequest,
   hashPasswordForStorage,
-} from '../src/authHandlers';
+} from './authHandlers';
 import {
   buildFoodRequest,
   canManageRequest,
@@ -31,8 +31,8 @@ import {
   normalizeFoodRequestDoc,
   normalizeMealType,
   validateEmployerFoodBody,
-} from '../src/foodRequestHelpers';
-import type { AuthTokenPayload } from '../src/authSecurity';
+} from './foodRequestHelpers';
+import type { AuthTokenPayload } from './authSecurity';
 
 let firebaseDb: FirebaseDatabase | null = null;
 let firebaseInitPromise: Promise<FirebaseDatabase | null> | null = null;
