@@ -3,6 +3,7 @@ import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
 import { SUPER_ADMIN_MOBILE, normalizeAppUser } from '../src/mongoHelpers';
+import { isDirectScriptRun } from './isDirectScriptRun';
 
 dotenv.config();
 
@@ -154,7 +155,7 @@ export async function runSeeding(explicitUri?: string): Promise<{
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isDirectScriptRun('seed.ts')) {
   runSeeding()
     .then((res) => {
       if (!res.success) process.exit(1);

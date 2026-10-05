@@ -2,6 +2,7 @@ import { MongoClient } from 'mongodb';
 import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
+import { isDirectScriptRun } from './isDirectScriptRun';
 
 dotenv.config();
 
@@ -172,8 +173,7 @@ export async function runMigration(explicitUri?: string): Promise<{
   }
 }
 
-// Execute directly if run via CLI
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isDirectScriptRun('migrate.ts')) {
   runMigration()
     .then((res) => {
       if (!res.success) {
