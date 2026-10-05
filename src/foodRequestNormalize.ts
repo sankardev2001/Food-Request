@@ -9,6 +9,7 @@ export interface FoodRequestShape {
   name: string;
   aadharNumber?: string;
   beneficiaryRole?: 'CPS' | 'Contractor';
+  foodCount?: number;
   vegNonVeg: 'Veg' | 'Non-Veg';
   type: string;
   remarks?: string;
@@ -16,8 +17,12 @@ export interface FoodRequestShape {
   createdByRole?: string;
 }
 
+const MEAL_TYPE_VALUES = ['Breakfast', 'Lunch', 'Dinner'] as const;
+
 export function normalizeMealType(type: string): string {
-  return ['Breakfast', 'Lunch', 'Dinner', 'Snacks'].includes(type) ? type : 'Lunch';
+  const t = String(type).trim();
+  if (t === 'Snacks') return 'Lunch';
+  return (MEAL_TYPE_VALUES as readonly string[]).includes(t) ? t : 'Lunch';
 }
 
 export function normalizeBeneficiaryRole(role: string | undefined): 'CPS' | 'Contractor' {
@@ -42,6 +47,10 @@ export function normalizeFoodRequestDoc(
     vegNonVeg: raw.vegNonVeg === 'Non-Veg' ? 'Non-Veg' : 'Veg',
     type: normalizeMealType(String(raw.type ?? 'Lunch')),
     remarks: raw.remarks != null ? String(raw.remarks).trim() : '',
+    foodCount:
+      raw.foodCount != null && raw.foodCount !== ''
+        ? Math.max(0, parseInt(String(raw.foodCount), 10) || 0)
+        : undefined,
     createdAt: String(raw.createdAt ?? new Date().toISOString()),
     createdByRole:
       raw.createdByRole != null && raw.createdByRole !== ''

@@ -36,7 +36,17 @@ export function normalizeMongoUri(raw: string | undefined): string {
   ) {
     uri = uri.slice(1, -1).trim();
   }
-  return uri;
+  return ensureMongoDatabaseInUri(uri);
+}
+
+/** Atlas URIs like `...mongodb.net/?appName=` have no DB — default to food_requester. */
+export function ensureMongoDatabaseInUri(uri: string, dbName = MONGODB_DB_NAME): string {
+  if (!uri || !/^mongodb(\+srv)?:\/\//.test(uri)) return uri;
+  if (/^mongodb(\+srv)?:\/\/[^/]+\/[^/?]+/.test(uri)) return uri;
+  if (uri.includes('?')) {
+    return uri.replace(/^(mongodb(?:\+srv)?:\/\/[^/?]+)\/?\?/, `$1/${dbName}?`);
+  }
+  return uri.replace(/^(mongodb(?:\+srv)?:\/\/[^/?]+)\/?$/, `$1/${dbName}`);
 }
 
 /** Detect common Atlas URI mistakes before connect (Vercel env copy/paste). */
@@ -85,12 +95,15 @@ export function getMongoConnectionTroubleshooting(errorMessage: string | null): 
     lower.includes('alert internal error') ||
     lower.includes('err_ssl') ||
     lower.includes('ssl routines') ||
-    lower.includes('tlsv1 alert')
+    lower.includes('tlsv1 alert') ||
+    lower.includes('socket disconnected') ||
+    lower.includes('secure tls connection')
   ) {
     hints.push(
-      'Atlas → Network Access: add 0.0.0.0/0 (Allow from anywhere) for Vercel serverless.',
-      'Atlas → Database Access: confirm DB user + password match MONGODB_URI (URL-encode special chars in password).',
-      'Vercel → Settings → Environment Variables: re-paste MONGODB_URI with no extra quotes/spaces, then Redeploy.',
+      'Your network (corporate VPN/firewall) may block MongoDB Atlas TLS — try mobile hotspot or home Wi‑Fi.',
+      'Atlas → Network Access: add your current public IP or 0.0.0.0/0 for testing.',
+      'Confirm MONGODB_URI in `.env` matches Atlas (user, password, `/food_requester`).',
+      'Production on Vercel may work even when localhost cannot reach Atlas.',
     );
   }
   if (lower.includes('authentication failed') || lower.includes('bad auth')) {

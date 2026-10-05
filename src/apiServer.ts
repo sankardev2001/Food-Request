@@ -7,7 +7,6 @@ type FirebaseDatabase = import('firebase-admin/database').Database;
 import {
   AppUserDoc,
   MONGODB_DB_NAME,
-  SUPER_ADMIN_MOBILE,
   normalizeAppUser,
   normalizeMongoUri,
   getMongoUriFormatError,
@@ -34,8 +33,14 @@ import {
   normalizeFoodRequestDoc,
   normalizeMealType,
   validateEmployerFoodBody,
+  validateFoodRequestItem,
+  assertEmployerCanEditRequest,
 } from './foodRequestHelpers';
+import { buildCpsExportRows, buildContractorExportRows } from './utils/excelExport';
+import type { FoodRequest } from './types';
 import type { AuthTokenPayload } from './authSecurity';
+import { DEFAULT_SUPER_ADMIN, DEFAULT_SUPER_ADMIN_PASSWORD, ensureSuperAdminUser } from './adminBootstrap';
+import { verifyPassword } from './authSecurity';
 
 let firebaseDb: FirebaseDatabase | null = null;
 let firebaseInitPromise: Promise<FirebaseDatabase | null> | null = null;
@@ -91,23 +96,13 @@ export interface FoodRequestDoc {
   name: string;
   aadharNumber?: string;
   beneficiaryRole?: 'CPS' | 'Contractor';
+  foodCount?: number;
   vegNonVeg: 'Veg' | 'Non-Veg';
   type: 'Breakfast' | 'Lunch' | 'Dinner' | 'Snacks' | string;
   remarks?: string;
   createdAt: string;
   createdByRole?: string;
 }
-
-// In-memory fallback for serverless container restarts
-const SEED_SUPER_ADMIN: AppUserDoc = {
-  id: 'usr-subash-superadmin',
-  name: 'subash',
-  mobileNo: SUPER_ADMIN_MOBILE,
-  password: '1234',
-  userType: 'admin',
-  isSuperAdmin: true,
-  createdAt: new Date().toISOString(),
-};
 
 let mongoClient: MongoClient | null = null;
 let currentMongoUri: string = normalizeMongoUri(process.env.MONGODB_URI);
@@ -116,11 +111,7 @@ let mongoBootstrapped = false;
 
 async function bootstrapMongo(db: ReturnType<MongoClient['db']>) {
   if (mongoBootstrapped) return;
-  const usersCol = db.collection<AppUserDoc>('users');
-  const adminDoc = await usersCol.findOne({ id: 'usr-subash-superadmin' });
-  if (!adminDoc) {
-    await usersCol.insertOne({ ...SEED_SUPER_ADMIN });
-  }
+  await ensureSuperAdminUser(db);
   mongoBootstrapped = true;
 }
 
@@ -235,6 +226,15 @@ async function getAllRequests(): Promise<FoodRequestDoc[]> {
 app.get('/api/health', async (req: Request, res: Response) => {
   const uri = normalizeMongoUri(process.env.MONGODB_URI);
   const db = await getMongoDb();
+  let superAdminLoginReady = false;
+  if (db) {
+    const admin = await db.collection<AppUserDoc>('users').findOne({ id: 'usr-subash-superadmin' });
+    superAdminLoginReady = !!(
+      admin &&
+      admin.mobileNo?.trim() === DEFAULT_SUPER_ADMIN.mobileNo &&
+      (await verifyPassword(DEFAULT_SUPER_ADMIN_PASSWORD, admin.password))
+    );
+  }
   res.json({
     status: 'ok',
     environment: 'vercel_serverless',
@@ -244,6 +244,8 @@ app.get('/api/health', async (req: Request, res: Response) => {
     mongoUriFormatError: uri ? getMongoUriFormatError(uri) : null,
     mongoError: mongoLastError,
     mongoHints: getMongoConnectionTroubleshooting(mongoLastError),
+    superAdminLoginReady,
+    defaultAdminMobile: DEFAULT_SUPER_ADMIN.mobileNo,
     nodeVersion: process.version,
     timestamp: new Date().toISOString(),
   });
@@ -401,32 +403,12 @@ app.post('/api/db/seed', async (req: Request, res: Response) => {
       });
     }
 
-    const usersCol = db.collection<AppUserDoc>('users');
-    const existing = await usersCol.findOne({ id: 'usr-subash-superadmin' });
-    let action: 'inserted' | 'updated' = 'updated';
-
-    if (!existing) {
-      await usersCol.insertOne({ ...SEED_SUPER_ADMIN });
-      action = 'inserted';
-    } else {
-      await usersCol.updateOne(
-        { id: 'usr-subash-superadmin' },
-        {
-          $set: {
-            name: SEED_SUPER_ADMIN.name,
-            mobileNo: SEED_SUPER_ADMIN.mobileNo,
-            password: SEED_SUPER_ADMIN.password,
-            userType: 'admin',
-            isSuperAdmin: true,
-          },
-        }
-      );
-    }
+    const action = await ensureSuperAdminUser(db);
 
     res.json({
       success: true,
       mode: 'mongodb',
-      admin: SEED_SUPER_ADMIN,
+      admin: DEFAULT_SUPER_ADMIN,
       action,
       details: [`Super Admin subash verified and seeded in MongoDB users collection.`],
     });
@@ -621,13 +603,14 @@ async function notifyNewRequest(saved: FoodRequestDoc) {
 }
 
 app.post('/api/requests', requireAuth(), async (req: Request, res: Response) => {
-  const { date, name, vegNonVeg, type, remarks, aadharNumber, beneficiaryRole, createdByRole } =
+  const { date, name, vegNonVeg, type, remarks, aadharNumber, beneficiaryRole, foodCount, createdByRole } =
     req.body;
   const auth = req.authUser! as AuthTokenPayload;
-  const validation = validateEmployerFoodBody({
+  const role = normalizeBeneficiaryRole(beneficiaryRole || 'CPS');
+  const validation = validateFoodRequestItem(role, {
     name,
     aadharNumber,
-    beneficiaryRole,
+    foodCount,
     vegNonVeg,
     type,
     remarks,
@@ -642,7 +625,8 @@ app.post('/api/requests', requireAuth(), async (req: Request, res: Response) => 
     type,
     remarks,
     aadharNumber,
-    beneficiaryRole,
+    foodCount,
+    beneficiaryRole: role,
     createdByRole,
   }) as FoodRequestDoc;
   const saved = await persistRequest(newDoc);
@@ -652,16 +636,17 @@ app.post('/api/requests', requireAuth(), async (req: Request, res: Response) => 
 
 app.post('/api/requests/bulk', requireAuth(), async (req: Request, res: Response) => {
   const auth = req.authUser! as AuthTokenPayload;
-  const { date, type, items } = req.body;
+  const { date, type, items, beneficiaryRole, createdByRole } = req.body;
+  const role = normalizeBeneficiaryRole(beneficiaryRole || 'CPS');
   if (!type || !Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ error: 'Meal type and request rows are required.' });
   }
   const savedRows: FoodRequestDoc[] = [];
   for (const item of items) {
-    const validation = validateEmployerFoodBody({
+    const validation = validateFoodRequestItem(role, {
       name: item.name,
       aadharNumber: item.aadharNumber,
-      beneficiaryRole: item.beneficiaryRole,
+      foodCount: item.foodCount,
       vegNonVeg: item.vegNonVeg || 'Veg',
       type,
       remarks: item.remarks,
@@ -674,7 +659,9 @@ app.post('/api/requests/bulk', requireAuth(), async (req: Request, res: Response
       type,
       remarks: item.remarks,
       aadharNumber: item.aadharNumber,
-      beneficiaryRole: item.beneficiaryRole,
+      foodCount: item.foodCount,
+      beneficiaryRole: role,
+      createdByRole,
     }) as FoodRequestDoc;
     savedRows.push(await persistRequest(doc));
     await notifyNewRequest(savedRows[savedRows.length - 1]);
@@ -689,14 +676,17 @@ app.put('/api/requests/:id', requireAuth(), async (req: Request, res: Response) 
   const auth = req.authUser! as AuthTokenPayload;
   const existing = await findRequestById(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Request not found.' });
+  const editBlock = assertEmployerCanEditRequest(auth, existing);
+  if (editBlock) return res.status(403).json({ error: editBlock });
   if (!canManageRequest(auth, existing)) {
     return res.status(403).json({ error: 'You can only edit your own requests.' });
   }
-  const { name, vegNonVeg, type, remarks, aadharNumber, beneficiaryRole } = req.body;
-  const validation = validateEmployerFoodBody({
+  const role = normalizeBeneficiaryRole(existing.beneficiaryRole || 'CPS');
+  const { name, vegNonVeg, type, remarks, aadharNumber, foodCount } = req.body;
+  const validation = validateFoodRequestItem(role, {
     name,
     aadharNumber,
-    beneficiaryRole,
+    foodCount: foodCount ?? existing.foodCount,
     vegNonVeg,
     type,
     remarks,
@@ -707,11 +697,12 @@ app.put('/api/requests/:id', requireAuth(), async (req: Request, res: Response) 
   const updated: FoodRequestDoc = {
     ...existing,
     name: String(name).trim(),
-    aadharNumber: String(aadharNumber).trim(),
-    beneficiaryRole:
-      beneficiaryRole != null
-        ? normalizeBeneficiaryRole(String(beneficiaryRole))
-        : existing.beneficiaryRole || 'CPS',
+    aadharNumber: role === 'CPS' ? String(aadharNumber ?? '').trim() : '',
+    foodCount:
+      role === 'Contractor'
+        ? Math.max(1, parseInt(String(foodCount ?? existing.foodCount ?? 1), 10) || 1)
+        : undefined,
+    beneficiaryRole: role,
     vegNonVeg: vegNonVeg === 'Non-Veg' ? 'Non-Veg' : 'Veg',
     type: normalizeMealType(type),
     remarks: remarks != null ? String(remarks).trim() : existing.remarks || '',
@@ -730,10 +721,13 @@ app.put('/api/requests/bulk', requireAuth(), async (req: Request, res: Response)
     if (!item.id) continue;
     const existing = await findRequestById(item.id);
     if (!existing || !canManageRequest(auth, existing)) continue;
-    const validation = validateEmployerFoodBody({
+    const editBlock = assertEmployerCanEditRequest(auth, existing);
+    if (editBlock) continue;
+    const role = normalizeBeneficiaryRole(existing.beneficiaryRole || 'CPS');
+    const validation = validateFoodRequestItem(role, {
       name: item.name,
       aadharNumber: item.aadharNumber ?? existing.aadharNumber,
-      beneficiaryRole: item.beneficiaryRole ?? existing.beneficiaryRole,
+      foodCount: item.foodCount ?? existing.foodCount,
       vegNonVeg: item.vegNonVeg,
       type: item.type,
       remarks: item.remarks,
@@ -743,10 +737,12 @@ app.put('/api/requests/bulk', requireAuth(), async (req: Request, res: Response)
       await persistRequest({
         ...existing,
         name: item.name!.trim(),
-        aadharNumber: String(item.aadharNumber ?? existing.aadharNumber ?? '').trim(),
-        beneficiaryRole: normalizeBeneficiaryRole(
-          item.beneficiaryRole ?? existing.beneficiaryRole ?? 'CPS'
-        ),
+        aadharNumber: role === 'CPS' ? String(item.aadharNumber ?? existing.aadharNumber ?? '').trim() : '',
+        foodCount:
+          role === 'Contractor'
+            ? Math.max(1, parseInt(String(item.foodCount ?? existing.foodCount ?? 1), 10) || 1)
+            : undefined,
+        beneficiaryRole: role,
         vegNonVeg: item.vegNonVeg === 'Non-Veg' ? 'Non-Veg' : 'Veg',
         type: normalizeMealType(item.type!),
         remarks: item.remarks != null ? String(item.remarks).trim() : existing.remarks || '',
@@ -773,22 +769,18 @@ app.delete('/api/requests/:id', requireAuth({ adminOnly: true }), async (req: Re
 // Export Excel
 app.get('/api/requests/export.xlsx', requireAuth({ adminOnly: true }), async (req: Request, res: Response) => {
   const all = await getAllRequests();
-  const rows = all.map((r) => ({
-    DATE: r.date,
-    'REQUESTER NAME': r.requesterName,
-    NAME: r.name,
-    'AADHAR FIRST 4': r.aadharNumber || '',
-    ROLES: r.beneficiaryRole || 'CPS',
-    'VEG/NON-VEG': r.vegNonVeg,
-    TYPE: r.type,
-    REMARK: r.remarks || '',
-    'MOBILE NO': r.requesterMobile,
-  }));
-
   const XLSX = await import('xlsx');
-  const worksheet = XLSX.utils.json_to_sheet(rows);
   const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, worksheet, 'data collect - admin site');
+  XLSX.utils.book_append_sheet(
+    workbook,
+    XLSX.utils.json_to_sheet(buildCpsExportRows(all as FoodRequest[])),
+    'CPS Requests'
+  );
+  XLSX.utils.book_append_sheet(
+    workbook,
+    XLSX.utils.json_to_sheet(buildContractorExportRows(all as FoodRequest[])),
+    'Contractor Requests'
+  );
   const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
 
   res.setHeader(
@@ -812,7 +804,6 @@ app.get('/api/stats', requireAuth({ adminOnly: true }), async (req: Request, res
       breakfastCount: all.filter((r) => r.type === 'Breakfast').length,
       lunchCount: all.filter((r) => r.type === 'Lunch').length,
       dinnerCount: all.filter((r) => r.type === 'Dinner').length,
-      snacksCount: all.filter((r) => r.type === 'Snacks').length,
       todayCount: all.filter((r) => r.date === todayStr).length,
     },
   });

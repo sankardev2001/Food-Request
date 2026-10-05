@@ -15,6 +15,8 @@ import {
   SUPER_ADMIN_MOBILE,
   normalizeAppUser,
   normalizeMongoUri,
+  getMongoClientOptions,
+  getMongoConnectionTroubleshooting,
   readLocalUsersFile,
   isSuperAdminUser,
   upsertUsersToMongo,
@@ -36,7 +38,11 @@ import {
   normalizeFoodRequestDoc,
   normalizeMealType,
   validateEmployerFoodBody,
+  validateFoodRequestItem,
+  assertEmployerCanEditRequest,
 } from './src/foodRequestHelpers';
+import { buildCpsExportRows, buildContractorExportRows } from './src/utils/excelExport';
+import type { FoodRequest } from './src/types';
 import type { AuthTokenPayload } from './src/authSecurity';
 
 dotenv.config();
@@ -61,6 +67,7 @@ export interface FoodRequestDoc {
   name: string;
   aadharNumber?: string;
   beneficiaryRole?: 'CPS' | 'Contractor';
+  foodCount?: number;
   vegNonVeg: 'Veg' | 'Non-Veg';
   type: 'Breakfast' | 'Lunch' | 'Dinner' | 'Snacks' | string;
   remarks?: string;
@@ -77,7 +84,7 @@ const SEED_SUPER_ADMIN: AppUserDoc = {
   id: 'usr-subash-superadmin',
   name: 'subash',
   mobileNo: SUPER_ADMIN_MOBILE,
-  password: '1234',
+  password: '3112',
   userType: 'admin',
   isSuperAdmin: true,
   createdAt: new Date().toISOString(),
@@ -102,32 +109,41 @@ async function getMongoClient(overrideUri?: string): Promise<MongoClient | null>
   }
 
   try {
+    if (mongoClient && isMongoConnected && (!overrideUri || overrideUri === currentMongoUri)) {
+      try {
+        await mongoClient.db('admin').command({ ping: 1 });
+        return mongoClient;
+      } catch {
+        mongoClient = null;
+        isMongoConnected = false;
+      }
+    }
+
     if (!mongoClient || (overrideUri && overrideUri !== currentMongoUri)) {
       if (mongoClient) {
         try {
           await mongoClient.close();
         } catch {}
       }
-      mongoClient = new MongoClient(uri, { serverSelectionTimeoutMS: 4000 });
+      mongoClient = new MongoClient(uri, getMongoClientOptions({ serverSelectionTimeoutMS: 15000 }));
       await mongoClient.connect();
       currentMongoUri = uri;
       isMongoConnected = true;
       mongoLastError = null;
       console.log('Connected successfully to MongoDB Atlas database!');
 
-      // Ensure super admin exists in MongoDB users collection
       const db = mongoClient.db(MONGODB_DB_NAME);
-      const usersCol = db.collection<AppUserDoc>('users');
-      const adminDoc = await usersCol.findOne({ id: 'usr-subash-superadmin' });
-      if (!adminDoc) {
-        await usersCol.insertOne({ ...SEED_SUPER_ADMIN });
-        console.log('Seeded super admin subash to MongoDB users collection.');
+      const { ensureSuperAdminUser } = await import('./src/adminBootstrap');
+      const bootAction = await ensureSuperAdminUser(db);
+      if (bootAction !== 'unchanged') {
+        console.log(`Super admin bootstrap: ${bootAction}`);
       }
     }
     return mongoClient;
-  } catch (err: any) {
+  } catch (err: unknown) {
+    mongoClient = null;
     isMongoConnected = false;
-    mongoLastError = err.message || 'Connection failed';
+    mongoLastError = err instanceof Error ? err.message : 'Connection failed';
     console.warn('MongoDB Atlas connection error:', mongoLastError);
     return null;
   }
@@ -202,11 +218,13 @@ app.get('/api/health', async (req: Request, res: Response) => {
   await getMongoClient();
   res.json({
     status: 'ok',
+    environment: 'local_dev',
     storage: isMongoConnected ? 'mongodb_atlas' : 'unavailable',
     databaseRequired: true,
     isMongoConnected,
     hasMongoUri: !!(currentMongoUri || process.env.MONGODB_URI),
     mongoLastError,
+    mongoHints: getMongoConnectionTroubleshooting(mongoLastError),
     timestamp: new Date().toISOString(),
   });
 });
@@ -224,7 +242,7 @@ app.post('/api/mongodb/test', requireAuth({ adminOnly: true }), async (req: Requ
   const start = Date.now();
   let testClient: MongoClient | null = null;
   try {
-    testClient = new MongoClient(uri, { serverSelectionTimeoutMS: 5000 });
+    testClient = new MongoClient(uri, getMongoClientOptions({ serverSelectionTimeoutMS: 8000 }));
     await testClient.connect();
     const pingRes = await testClient.db('admin').command({ ping: 1 });
     const pingMs = Date.now() - start;
@@ -359,7 +377,12 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
     await handleLoginRequest(req, res, { getAllUsers, saveUser });
   } catch (error: unknown) {
     if (error instanceof DatabaseUnavailableError) {
-      return res.status(503).json({ success: false, error: error.message });
+      const hints = getMongoConnectionTroubleshooting(mongoLastError);
+      return res.status(503).json({
+        success: false,
+        error: error.message,
+        mongoHints: hints.length ? hints : undefined,
+      });
     }
     console.error('Login error:', error);
     res.status(500).json({ success: false, error: 'Login authentication failed.' });
@@ -602,20 +625,21 @@ async function pushFoodRequestNotification(saved: FoodRequestDoc) {
 
 app.post('/api/requests', requireAuth(), async (req: Request, res: Response) => {
   try {
-    const { date, name, vegNonVeg, type, remarks, aadharNumber, beneficiaryRole, createdByRole } =
+    const { date, name, vegNonVeg, type, remarks, aadharNumber, beneficiaryRole, foodCount, createdByRole } =
       req.body;
-    const validation = validateEmployerFoodBody({
+    const auth = req.authUser!;
+    const role = normalizeBeneficiaryRole(beneficiaryRole || 'CPS');
+    const validation = validateFoodRequestItem(role, {
       name,
       aadharNumber,
+      foodCount,
       vegNonVeg,
       type,
       remarks,
-      beneficiaryRole,
     });
     if (validation.ok === false) {
       return res.status(400).json({ error: validation.error });
     }
-    const auth = req.authUser!;
     const newRequest = buildFoodRequest(auth as AuthTokenPayload, {
       date,
       name,
@@ -623,7 +647,8 @@ app.post('/api/requests', requireAuth(), async (req: Request, res: Response) => 
       type,
       remarks,
       aadharNumber,
-      beneficiaryRole,
+      foodCount,
+      beneficiaryRole: role,
       createdByRole,
     });
     const saved = await saveRequest(newRequest);
@@ -636,27 +661,30 @@ app.post('/api/requests', requireAuth(), async (req: Request, res: Response) => 
 
 app.post('/api/requests/bulk', requireAuth(), async (req: Request, res: Response) => {
   try {
-    const { date, type, items } = req.body as {
+    const { date, type, items, beneficiaryRole, createdByRole } = req.body as {
       date?: string;
       type?: string;
+      beneficiaryRole?: string;
+      createdByRole?: string;
       items?: Array<{
         name?: string;
         aadharNumber?: string;
-        beneficiaryRole?: string;
+        foodCount?: number;
         vegNonVeg?: string;
         remarks?: string;
       }>;
     };
+    const role = normalizeBeneficiaryRole(beneficiaryRole || 'CPS');
     if (!type || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Meal type and at least one request row are required.' });
     }
     const auth = req.authUser!;
     const savedRows: FoodRequestDoc[] = [];
     for (const item of items) {
-      const validation = validateEmployerFoodBody({
+      const validation = validateFoodRequestItem(role, {
         name: item.name,
         aadharNumber: item.aadharNumber,
-        beneficiaryRole: item.beneficiaryRole,
+        foodCount: item.foodCount,
         vegNonVeg: item.vegNonVeg || 'Veg',
         type,
         remarks: item.remarks,
@@ -669,7 +697,9 @@ app.post('/api/requests/bulk', requireAuth(), async (req: Request, res: Response
         type,
         remarks: item.remarks,
         aadharNumber: item.aadharNumber,
-        beneficiaryRole: item.beneficiaryRole,
+        foodCount: item.foodCount,
+        beneficiaryRole: role,
+        createdByRole,
       });
       const saved = await saveRequest(doc);
       savedRows.push(saved);
@@ -690,14 +720,17 @@ app.put('/api/requests/:id', requireAuth(), async (req: Request, res: Response) 
     const existing = await findRequestById(id);
     if (!existing) return res.status(404).json({ error: 'Request not found.' });
     const auth = req.authUser!;
+    const editBlock = assertEmployerCanEditRequest(auth, existing);
+    if (editBlock) return res.status(403).json({ error: editBlock });
     if (!canManageRequest(auth, existing)) {
       return res.status(403).json({ error: 'You can only edit your own requests.' });
     }
-    const { name, vegNonVeg, type, remarks, aadharNumber, beneficiaryRole } = req.body;
-    const validation = validateEmployerFoodBody({
+    const role = normalizeBeneficiaryRole(existing.beneficiaryRole || 'CPS');
+    const { name, vegNonVeg, type, remarks, aadharNumber, foodCount } = req.body;
+    const validation = validateFoodRequestItem(role, {
       name,
       aadharNumber,
-      beneficiaryRole,
+      foodCount: foodCount ?? existing.foodCount,
       vegNonVeg,
       type,
       remarks,
@@ -708,11 +741,12 @@ app.put('/api/requests/:id', requireAuth(), async (req: Request, res: Response) 
     const updated: FoodRequestDoc = {
       ...existing,
       name: String(name).trim(),
-      aadharNumber: String(aadharNumber).trim(),
-      beneficiaryRole:
-        beneficiaryRole != null
-          ? normalizeBeneficiaryRole(String(beneficiaryRole))
-          : existing.beneficiaryRole || 'CPS',
+      aadharNumber: role === 'CPS' ? String(aadharNumber ?? '').trim() : '',
+      foodCount:
+        role === 'Contractor'
+          ? Math.max(1, parseInt(String(foodCount ?? existing.foodCount ?? 1), 10) || 1)
+          : undefined,
+      beneficiaryRole: role,
       vegNonVeg: vegNonVeg === 'Non-Veg' ? 'Non-Veg' : 'Veg',
       type: normalizeMealType(type),
       remarks: remarks != null ? String(remarks).trim() : existing.remarks || '',
@@ -731,7 +765,7 @@ app.put('/api/requests/bulk', requireAuth(), async (req: Request, res: Response)
         id: string;
         name?: string;
         aadharNumber?: string;
-        beneficiaryRole?: string;
+        foodCount?: number;
         vegNonVeg?: string;
         type?: string;
         remarks?: string;
@@ -746,10 +780,13 @@ app.put('/api/requests/bulk', requireAuth(), async (req: Request, res: Response)
       if (!item.id) continue;
       const existing = await findRequestById(item.id);
       if (!existing || !canManageRequest(auth, existing)) continue;
-      const validation = validateEmployerFoodBody({
+      const editBlock = assertEmployerCanEditRequest(auth, existing);
+      if (editBlock) continue;
+      const role = normalizeBeneficiaryRole(existing.beneficiaryRole || 'CPS');
+      const validation = validateFoodRequestItem(role, {
         name: item.name,
         aadharNumber: item.aadharNumber ?? existing.aadharNumber,
-        beneficiaryRole: item.beneficiaryRole ?? existing.beneficiaryRole,
+        foodCount: item.foodCount ?? existing.foodCount,
         vegNonVeg: item.vegNonVeg,
         type: item.type,
         remarks: item.remarks,
@@ -758,10 +795,12 @@ app.put('/api/requests/bulk', requireAuth(), async (req: Request, res: Response)
       const doc: FoodRequestDoc = {
         ...existing,
         name: item.name!.trim(),
-        aadharNumber: String(item.aadharNumber ?? existing.aadharNumber ?? '').trim(),
-        beneficiaryRole: normalizeBeneficiaryRole(
-          item.beneficiaryRole ?? existing.beneficiaryRole ?? 'CPS'
-        ),
+        aadharNumber: role === 'CPS' ? String(item.aadharNumber ?? existing.aadharNumber ?? '').trim() : '',
+        foodCount:
+          role === 'Contractor'
+            ? Math.max(1, parseInt(String(item.foodCount ?? existing.foodCount ?? 1), 10) || 1)
+            : undefined,
+        beneficiaryRole: role,
         vegNonVeg: item.vegNonVeg === 'Non-Veg' ? 'Non-Veg' : 'Veg',
         type: normalizeMealType(item.type!),
         remarks: item.remarks != null ? String(item.remarks).trim() : existing.remarks || '',
@@ -793,35 +832,17 @@ app.delete('/api/requests/:id', requireAuth({ adminOnly: true }), async (req: Re
 app.get('/api/requests/export.xlsx', requireAuth({ adminOnly: true }), async (req: Request, res: Response) => {
   try {
     const all = await getAllRequests();
-
-    // Exact columns matching wireframe:
-    const rows = all.map((r) => ({
-      DATE: r.date,
-      'REQUESTER NAME': r.requesterName,
-      NAME: r.name,
-      'AADHAR FIRST 4': r.aadharNumber || '',
-      ROLES: r.beneficiaryRole || 'CPS',
-      'VEG/NON-VEG': r.vegNonVeg,
-      TYPE: r.type,
-      REMARK: r.remarks || '',
-      'MOBILE NO': r.requesterMobile,
-    }));
-
-    const worksheet = XLSX.utils.json_to_sheet(rows);
-    worksheet['!cols'] = [
-      { wch: 14 },
-      { wch: 22 },
-      { wch: 22 },
-      { wch: 14 },
-      { wch: 16 },
-      { wch: 18 },
-      { wch: 24 },
-      { wch: 16 },
-    ];
-
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'data collect - admin site');
-
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.json_to_sheet(buildCpsExportRows(all as FoodRequest[])),
+      'CPS Requests'
+    );
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.json_to_sheet(buildContractorExportRows(all as FoodRequest[])),
+      'Contractor Requests'
+    );
     const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
 
     res.setHeader(
@@ -851,7 +872,6 @@ app.get('/api/stats', requireAuth({ adminOnly: true }), async (req: Request, res
       breakfastCount: all.filter((r) => r.type === 'Breakfast').length,
       lunchCount: all.filter((r) => r.type === 'Lunch').length,
       dinnerCount: all.filter((r) => r.type === 'Dinner').length,
-      snacksCount: all.filter((r) => r.type === 'Snacks').length,
       todayCount: all.filter((r) => r.date === todayStr).length,
     };
 

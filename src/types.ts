@@ -27,7 +27,7 @@ export type FoodType = 'Veg' | 'Non-Veg';
 /** Beneficiary role on a food request (not the logged-in user role). */
 export type BeneficiaryRole = 'CPS' | 'Contractor';
 // Meal type replacing detaction/non-detaction
-export type MealType = 'Breakfast' | 'Lunch' | 'Dinner' | 'Snacks';
+export type MealType = 'Breakfast' | 'Lunch' | 'Dinner';
 
 // Stored in the 'food_requests' table
 export interface FoodRequest {
@@ -38,9 +38,11 @@ export interface FoodRequest {
   requesterMobile: string;   // Mobile No of requester
   name: string;              // Beneficiary name
   aadharNumber?: string;     // First 4 digits of Aadhar (employer submissions)
-  beneficiaryRole?: BeneficiaryRole; // CPS | Contractor
-  vegNonVeg: FoodType;       // 'Veg' | 'Non-Veg'
-  type: MealType;            // 'Breakfast' | 'Lunch' | 'Dinner' | 'Snacks'
+  beneficiaryRole?: BeneficiaryRole; // CPS | Contractor (form-level, not per-row in UI)
+  vegNonVeg: FoodType;
+  type: MealType;
+  /** Contractor rows: number of meals */
+  foodCount?: number;
   remarks?: string;
   createdAt: string;
   createdByRole?: string;
@@ -53,6 +55,5 @@ export interface FoodStats {
   breakfastCount: number;
   lunchCount: number;
   dinnerCount: number;
-  snacksCount: number;
   todayCount: number;
 }

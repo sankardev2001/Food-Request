@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import type { AppUserDoc } from './mongoHelpers';
+import { isSuperAdminUser } from './mongoHelpers';
 import {
   checkLoginRateLimit,
   clearLoginFailures,
@@ -37,9 +38,19 @@ export async function handleLoginRequest(req: Request, res: Response, deps: User
   }
 
   const allUsers = await deps.getAllUsers();
-  const matchedUser = allUsers.find((u) => u.mobileNo.trim() === cleanMobile);
+  const candidates = allUsers
+    .filter((u) => u.mobileNo.trim() === cleanMobile)
+    .sort((a, b) => (isSuperAdminUser(b) ? 1 : 0) - (isSuperAdminUser(a) ? 1 : 0));
 
-  if (!matchedUser || !(await verifyPassword(String(password), matchedUser.password))) {
+  let matchedUser: AppUserDoc | undefined;
+  for (const user of candidates) {
+    if (await verifyPassword(String(password), user.password)) {
+      matchedUser = user;
+      break;
+    }
+  }
+
+  if (!matchedUser) {
     recordLoginFailure(req, cleanMobile);
     return res.status(401).json({
       success: false,

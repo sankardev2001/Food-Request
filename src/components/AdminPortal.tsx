@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { UserProfile, FoodRequest, FoodStats, FoodType, MealType } from '../types';
+import { UserProfile, FoodRequest, FoodStats } from '../types';
 import { apiFetch } from '../apiFetch';
 import { ExcelGridViewer } from './ExcelGridViewer';
 import { UserManagement } from './UserManagement';
+import { FoodRequestEntryPanel } from './FoodRequestEntryPanel';
 import {
   FileSpreadsheet,
   PlusCircle,
@@ -11,14 +12,12 @@ import {
   Utensils,
   CheckCircle2,
   AlertCircle,
-  Send,
   Cloud,
   Users,
   Database,
   Coffee,
   Sun,
   Moon,
-  Cookie,
   Bell,
   X,
 } from 'lucide-react';
@@ -56,14 +55,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ user, onOpenDeployGuid
     }
   }, []);
 
-  // Admin Food Request Form state
-  const formDate = new Date().toISOString().slice(0, 10);
-  const [beneficiaryName, setBeneficiaryName] = useState('');
-  const [vegNonVeg, setVegNonVeg] = useState<FoodType>('Veg');
-  // Updated Meal Type: Breakfast, Lunch, Dinner, Snacks
-  const [type, setType] = useState<MealType>('Lunch');
-  const [submittingForm, setSubmittingForm] = useState(false);
-
+  // Admin food request entry uses shared CSP / Contractor / Edit panel
   const fetchRequestsAndStats = async (artificialDelay = false) => {
     setLoading(true);
     try {
@@ -153,53 +145,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ user, onOpenDeployGuid
       }
     } catch (e) {
       console.error('Failed to delete request:', e);
-    }
-  };
-
-  const handleAdminFormSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!beneficiaryName.trim()) {
-      alert('Please enter beneficiary name.');
-      return;
-    }
-
-    setSubmittingForm(true);
-    try {
-      const payload = {
-        date: formDate,
-        requesterName: user.name,
-        requesterCps: user.mobileNo,
-        requesterMobile: user.mobileNo,
-        name: beneficiaryName.trim(),
-        vegNonVeg,
-        type,
-        createdByRole: 'admin',
-      };
-
-      const res = await apiFetch('/api/requests', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || 'Failed to add request.');
-      }
-
-      setActionMessage(`Food request for ${beneficiaryName} (${type}) registered successfully!`);
-      setTimeout(() => setActionMessage(null), 3000);
-
-      // Reset form
-      setBeneficiaryName('');
-
-      // Refresh list & switch back to excel view
-      await fetchRequestsAndStats();
-      setActiveTab('excel');
-    } catch (err: any) {
-      alert(err.message || 'Error creating request.');
-    } finally {
-      setSubmittingForm(false);
     }
   };
 
@@ -428,18 +373,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ user, onOpenDeployGuid
           <div className="text-[10px] text-indigo-600 mt-1 font-medium">Evening meal</div>
         </div>
 
-        <div className="bg-white/60 backdrop-blur-xl p-4 rounded-[2rem] border border-white/60 shadow-lg hover:bg-white/80 transition-all flex flex-col justify-between">
-          <div className="text-[11px] font-bold uppercase tracking-wider text-purple-700 flex items-center gap-1">
-            <Cookie className="w-3.5 h-3.5" />
-            <span>Snacks</span>
-          </div>
-          <div className="text-2xl font-black text-purple-700 mt-2 font-mono">
-            {stats ? stats.snacksCount : requests.filter((r) => r.type === 'Snacks').length}
-          </div>
-          <div className="text-[10px] text-purple-600 mt-1 font-medium">Refreshments</div>
-        </div>
-
-        <div className="bg-gradient-to-br from-indigo-600/90 to-purple-600/90 backdrop-blur-xl p-4 rounded-[2rem] border border-white/40 shadow-lg shadow-indigo-500/20 text-white flex flex-col justify-between">
+        <div className="bg-gradient-to-br from-indigo-600/90 to-purple-600/90 backdrop-blur-xl p-4 rounded-[2rem] border border-white/40 shadow-lg shadow-indigo-500/20 text-white flex flex-col justify-between col-span-1 md:col-span-2">
           <div className="text-[11px] font-bold uppercase tracking-wider text-indigo-100">Today's Orders</div>
           <div className="text-2xl font-black text-white mt-2 font-mono">
             {stats ? stats.todayCount : requests.filter((r) => r.date === new Date().toISOString().slice(0, 10)).length}
@@ -463,112 +397,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ user, onOpenDeployGuid
       )}
 
       {activeTab === 'add-form' && (
-        /* Admin Add Food Request Form matching Wireframe */
-        <div className="max-w-2xl mx-auto bg-white/50 backdrop-blur-2xl rounded-[2.5rem] shadow-2xl border border-white/60 overflow-hidden">
-          <div className="bg-white/40 backdrop-blur-xl p-6 text-center border-b border-white/40">
-            <h2 className="text-xl font-black uppercase tracking-tight text-slate-800">
-              Food Requester site (Admin Entry)
-            </h2>
-            <p className="text-xs text-slate-500 mt-1 font-medium">
-              Submit food requests directly to the master Excel sheet (`food_requests` table)
-            </p>
-          </div>
-
-          <form onSubmit={handleAdminFormSubmit} className="p-6 space-y-4">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                  * Date
-                </label>
-                <input
-                  type="date"
-                  readOnly
-                  disabled
-                  value={formDate}
-                  className="w-full px-4 py-2.5 rounded-xl border border-white/70 bg-white/40 backdrop-blur-sm text-sm font-medium text-slate-500 cursor-not-allowed shadow-xs"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                  * Requester Name
-                </label>
-                <input
-                  type="text"
-                  readOnly
-                  disabled
-                  value={user.name}
-                  className="w-full px-4 py-2.5 rounded-xl border border-white/70 bg-white/40 backdrop-blur-sm text-sm font-medium text-slate-500 cursor-not-allowed shadow-xs"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                * Name (Beneficiary)
-              </label>
-              <input
-                type="text"
-                required
-                value={beneficiaryName}
-                onChange={(e) => setBeneficiaryName(e.target.value)}
-                placeholder="Enter Beneficiary Name"
-                className="w-full px-4 py-2.5 rounded-xl border border-white/70 bg-white/70 backdrop-blur-sm text-sm font-medium text-slate-800 placeholder:text-slate-400 focus:outline-none focus:bg-white focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/15 shadow-xs transition-all"
-              />
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                  * Food Type
-                </label>
-                <select
-                  value={vegNonVeg}
-                  onChange={(e) => setVegNonVeg(e.target.value as FoodType)}
-                  className="w-full px-4 py-2.5 rounded-xl border border-white/70 bg-white/70 backdrop-blur-sm text-sm font-bold text-slate-800 focus:outline-none focus:bg-white focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/15 shadow-xs transition-all cursor-pointer"
-                >
-                  <option value="Veg">Veg (Vegetarian)</option>
-                  <option value="Non-Veg">Non-Veg (Non-Vegetarian)</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                  * Type (Meal Time)
-                </label>
-                <select
-                  value={type}
-                  onChange={(e) => setType(e.target.value as MealType)}
-                  className="w-full px-4 py-2.5 rounded-xl border border-white/70 bg-white/70 backdrop-blur-sm text-sm font-bold text-slate-800 focus:outline-none focus:bg-white focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/15 shadow-xs transition-all cursor-pointer"
-                >
-                  <option value="Breakfast">Breakfast</option>
-                  <option value="Lunch">Lunch</option>
-                  <option value="Dinner">Dinner</option>
-                  <option value="Snacks">Snacks</option>
-                </select>
-              </div>
-            </div>
-
-            <div className="pt-4 flex items-center gap-3">
-              <button
-                type="submit"
-                disabled={submittingForm}
-                className="flex-1 py-3.5 px-4 bg-emerald-500 hover:bg-emerald-600 text-white font-black text-sm uppercase tracking-wider rounded-2xl transition-all shadow-lg shadow-emerald-500/25 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
-              >
-                <Send className="w-4 h-4 text-white" />
-                <span>{submittingForm ? 'Adding...' : 'SUBMIT REQUEST TO EXCEL SHEET'}</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setActiveTab('excel')}
-                className="px-5 py-3.5 rounded-2xl border border-white/70 bg-white/60 hover:bg-white/90 text-xs font-bold text-slate-700 transition-all cursor-pointer backdrop-blur-md"
-              >
-                Cancel
-              </button>
-            </div>
-          </form>
-        </div>
+        <FoodRequestEntryPanel user={user} entryContext="admin" showHistorySidebar={false} />
       )}
 
     </div>

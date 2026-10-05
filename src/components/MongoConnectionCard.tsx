@@ -320,7 +320,7 @@ export const MongoConnectionCard: React.FC = () => {
               Deployment Migration & Seeding Tools
             </h4>
             <p className="text-xs text-slate-500 mt-0.5">
-              Execute database migrations and seed the super admin (<code className="font-bold text-slate-700">subash</code> / CPS: <code className="font-bold text-slate-700">1234</code>) with 1-click or via CLI.
+              Execute database migrations and seed the super admin (<code className="font-bold text-slate-700">subash</code> / mobile <code className="font-bold text-slate-700">9500466927</code>, password <code className="font-bold text-slate-700">3112</code>) with 1-click or via CLI.
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">

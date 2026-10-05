@@ -143,7 +143,6 @@ export const ExcelGridViewer: React.FC<ExcelGridViewerProps> = ({
             <option value="Breakfast">Breakfast</option>
             <option value="Lunch">Lunch</option>
             <option value="Dinner">Dinner</option>
-            <option value="Snacks">Snacks</option>
           </select>
         </div>
 

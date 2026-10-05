@@ -2,27 +2,27 @@ import { MongoClient } from 'mongodb';
 import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
-import { SUPER_ADMIN_MOBILE, normalizeAppUser } from '../src/mongoHelpers';
+import {
+  MONGODB_DB_NAME,
+  normalizeAppUser,
+  normalizeMongoUri,
+  getMongoUriFormatError,
+  getMongoClientOptions,
+  getMongoConnectionTroubleshooting,
+} from '../src/mongoHelpers';
+import { DEFAULT_SUPER_ADMIN as SEED_SUPER_ADMIN } from '../src/adminBootstrap';
 import { isDirectScriptRun } from './isDirectScriptRun';
 
 dotenv.config();
 
-export const SEED_SUPER_ADMIN = {
-  id: 'usr-subash-superadmin',
-  name: 'subash',
-  mobileNo: SUPER_ADMIN_MOBILE,
-  password: '1234',
-  userType: 'admin' as const,
-  isSuperAdmin: true,
-  createdAt: new Date().toISOString(),
-};
+export { SEED_SUPER_ADMIN };
 
 function getMongoUri(): string {
   const arg = process.argv.find((a) => a.startsWith('--uri='));
   if (arg) {
     return arg.replace('--uri=', '').trim();
   }
-  return (process.env.MONGODB_URI || '').trim();
+  return normalizeMongoUri(process.env.MONGODB_URI);
 }
 
 export async function runSeeding(explicitUri?: string): Promise<{
@@ -33,8 +33,20 @@ export async function runSeeding(explicitUri?: string): Promise<{
   details: string[];
   error?: string;
 }> {
-  const uri = explicitUri || getMongoUri();
+  const uri = normalizeMongoUri(explicitUri || getMongoUri());
   const details: string[] = [];
+  const uriFormatError = uri ? getMongoUriFormatError(uri) : null;
+  if (uriFormatError) {
+    console.error('❌ Invalid MONGODB_URI:', uriFormatError);
+    return {
+      success: false,
+      mode: 'mongodb',
+      admin: SEED_SUPER_ADMIN,
+      action: 'already_exists',
+      details,
+      error: uriFormatError,
+    };
+  }
 
   console.log('----------------------------------------------------');
   console.log('🌱 FOOD REQUESTER DATABASE SEEDING ENGINE');
@@ -63,10 +75,10 @@ export async function runSeeding(explicitUri?: string): Promise<{
     console.log(`📡 Connecting to MongoDB Atlas to seed database...`);
     let client: MongoClient | null = null;
     try {
-      client = new MongoClient(uri, { serverSelectionTimeoutMS: 6000 });
+      client = new MongoClient(uri, getMongoClientOptions({ serverSelectionTimeoutMS: 15000 }));
       await client.connect();
 
-      const db = client.db('food_requester');
+      const db = client.db(MONGODB_DB_NAME);
       const usersCol = db.collection('users');
 
       const existing = await usersCol.findOne({ id: SEED_SUPER_ADMIN.id });
@@ -97,14 +109,27 @@ export async function runSeeding(explicitUri?: string): Promise<{
 
       return { success: true, mode: 'mongodb', admin: SEED_SUPER_ADMIN, action, details };
     } catch (err: any) {
-      console.error('❌ MongoDB seeding failed:', err.message);
+      const msg = err?.message || 'Unknown seeding error';
+      console.error('❌ MongoDB seeding failed:', msg);
+      const hints = getMongoConnectionTroubleshooting(msg);
+      if (
+        msg.toLowerCase().includes('tls') ||
+        msg.toLowerCase().includes('socket disconnected') ||
+        msg.toLowerCase().includes('ssl')
+      ) {
+        console.error('');
+        console.error('   This often means your network (corporate VPN/firewall) blocks MongoDB Atlas.');
+        console.error('   Production on Vercel may still work. Try: mobile hotspot, home Wi‑Fi, or seed via Atlas UI.');
+        console.error('   Also add your current public IP in Atlas → Network Access (or use 0.0.0.0/0).');
+      }
+      for (const h of hints) console.error(`   • ${h}`);
       return {
         success: false,
         mode: 'mongodb',
         admin: SEED_SUPER_ADMIN,
         action: 'already_exists',
         details,
-        error: err.message || 'Unknown seeding error',
+        error: msg,
       };
     } finally {
       if (client) {
