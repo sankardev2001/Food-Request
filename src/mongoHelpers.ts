@@ -107,7 +107,11 @@ export function getMongoConnectionTroubleshooting(errorMessage: string | null): 
     );
   }
   if (lower.includes('authentication failed') || lower.includes('bad auth')) {
-    hints.push('Reset the Atlas database user password and update MONGODB_URI on Vercel.');
+    hints.push(
+      'Atlas rejected the password in MONGODB_URI — reset the DB user password in Atlas → Database Access.',
+      'Update MONGODB_URI on Vercel (Production) to match; URL-encode special characters in the password.',
+      'Redeploy after changing env vars (same URI as working local `.env` if local connects).',
+    );
   }
   return hints;
 }

@@ -165,6 +165,12 @@ async function getMongoDb(overrideUri?: string) {
     await bootstrapMongo(db);
     return db;
   } catch (err: unknown) {
+    if (mongoClient) {
+      try {
+        await mongoClient.close();
+      } catch {}
+      mongoClient = null;
+    }
     mongoLastError = err instanceof Error ? err.message : 'Connection failed';
     console.warn('MongoDB connection error in serverless:', mongoLastError);
     return null;
@@ -544,6 +550,7 @@ app.get('/api/requests/recent', requireAuth({ adminOnly: true }), async (req: Re
 
 // GET /api/requests
 app.get('/api/requests', requireAuth(), async (req: Request, res: Response) => {
+  try {
   const role = (req.query.role as string) || 'employer';
   if (role === 'admin' && req.authUser?.role !== 'admin') {
     return res.status(403).json({ error: 'Admin access required.' });
@@ -583,6 +590,16 @@ app.get('/api/requests', requireAuth(), async (req: Request, res: Response) => {
   }
 
   res.json({ success: true, count: all.length, requests: all });
+  } catch (err: unknown) {
+    if (err instanceof DatabaseUnavailableError) {
+      return res.status(503).json({
+        success: false,
+        error: err.message,
+        mongoHints: getMongoConnectionTroubleshooting(mongoLastError),
+      });
+    }
+    throw err;
+  }
 });
 
 async function notifyNewRequest(saved: FoodRequestDoc) {
