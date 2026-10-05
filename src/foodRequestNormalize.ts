@@ -29,6 +29,13 @@ export function normalizeBeneficiaryRole(role: string | undefined): 'CPS' | 'Con
   return role === 'Contractor' ? 'Contractor' : 'CPS';
 }
 
+/** First 4 digits for CPS Excel/grid (handles legacy full Aadhar in DB). */
+export function formatAadharFirst4(value: string | undefined): string {
+  const digits = String(value ?? '').replace(/\D/g, '');
+  if (!digits) return '';
+  return digits.slice(0, 4);
+}
+
 export function normalizeFoodRequestDoc(
   raw: Record<string, unknown> | FoodRequestShape
 ): FoodRequestShape {
@@ -40,7 +47,15 @@ export function normalizeFoodRequestDoc(
     requesterCps: String(raw.requesterCps ?? mobile).trim(),
     requesterMobile: mobile,
     name: String(raw.name ?? '').trim(),
-    aadharNumber: raw.aadharNumber != null ? String(raw.aadharNumber).trim() : '',
+    aadharNumber: formatAadharFirst4(
+      String(
+        raw.aadharNumber ??
+          raw.aadhar ??
+          raw.aadharFirst4 ??
+          raw['AADHAR FIRST 4'] ??
+          ''
+      ).trim()
+    ),
     beneficiaryRole: normalizeBeneficiaryRole(
       raw.beneficiaryRole != null ? String(raw.beneficiaryRole) : undefined
     ),

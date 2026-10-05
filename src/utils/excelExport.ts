@@ -1,5 +1,6 @@
 import * as XLSX from 'xlsx';
 import { FoodRequest } from '../types';
+import { formatAadharFirst4 } from '../foodRequestNormalize';
 
 function isContractorRequest(req: FoodRequest): boolean {
   return req.beneficiaryRole === 'Contractor';
@@ -12,7 +13,7 @@ export function buildCpsExportRows(requests: FoodRequest[]) {
       DATE: req.date,
       'REQUESTER NAME': req.requesterName,
       'NAME (BENEFICIARY)': req.name,
-      'AADHAR FIRST 4': req.aadharNumber || '',
+      'AADHAR FIRST 4': formatAadharFirst4(req.aadharNumber),
       'VEG/NON-VEG': req.vegNonVeg,
       'MEAL TIME': req.type,
       REMARK: req.remarks || '',

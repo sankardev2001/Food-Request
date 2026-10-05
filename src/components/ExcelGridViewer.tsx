@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { FoodRequest } from '../types';
 import { exportFoodRequestsToExcel, exportFoodRequestsToCSV } from '../utils/excelExport';
+import { formatAadharFirst4 } from '../foodRequestNormalize';
 import { apiFetch } from '../apiFetch';
 import { Download, FileSpreadsheet, Search, Filter, Trash2, Calendar, FileText, Check } from 'lucide-react';
 
@@ -231,11 +232,11 @@ export const ExcelGridViewer: React.FC<ExcelGridViewerProps> = ({
                 <th className="px-3 py-1.5 font-semibold text-center border-r border-white/50">C</th>
                 <th className="px-3 py-1.5 font-semibold text-center border-r border-white/50">D</th>
                 <th className="px-3 py-1.5 font-semibold text-center border-r border-white/50">E</th>
+                <th className="px-3 py-1.5 font-semibold text-center border-r border-white/50">F</th>
                 {isAdmin && <th className="px-3 py-1.5 font-semibold text-center">Action</th>}
               </tr>
 
-              {/* Exact Column Names matching Screenshot 1 */}
-              {/* DATE | REQUESTER NAME | NAME | VEG/NON-VEG | TYPE */}
+              {/* DATE | REQUESTER | NAME | AADHAR | VEG/NON-VEG | MEAL TIME */}
               <tr className="bg-white/70 text-slate-800 font-black border-y border-white/60 tracking-wider select-none backdrop-blur-md">
                 <th className="w-10 px-2 py-2 text-center bg-white/50 border-r border-white/50 font-mono text-slate-600">
                   1
@@ -243,8 +244,9 @@ export const ExcelGridViewer: React.FC<ExcelGridViewerProps> = ({
                 <th className="px-4 py-2.5 border-r border-white/50 whitespace-nowrap">DATE</th>
                 <th className="px-4 py-2.5 border-r border-white/50 whitespace-nowrap">REQUESTER NAME</th>
                 <th className="px-4 py-2.5 border-r border-white/50 whitespace-nowrap">NAME</th>
+                <th className="px-4 py-2.5 border-r border-white/50 whitespace-nowrap">AADHAR FIRST 4</th>
                 <th className="px-4 py-2.5 border-r border-white/50 whitespace-nowrap">VEG/NON-VEG</th>
-                <th className="px-4 py-2.5 border-r border-white/50 whitespace-nowrap">TYPE</th>
+                <th className="px-4 py-2.5 border-r border-white/50 whitespace-nowrap">MEAL TIME</th>
                 {isAdmin && <th className="px-3 py-2.5 text-center text-slate-600 font-semibold">Manage</th>}
               </tr>
             </thead>
@@ -311,14 +313,31 @@ export const ExcelGridViewer: React.FC<ExcelGridViewerProps> = ({
                     {req.name}
                   </td>
 
-                  {/* VEG/NON-VEG */}
+                  {/* AADHAR FIRST 4 */}
                   <td
                     onClick={(e) => {
                       e.stopPropagation();
                       setActiveCell({ row: rIdx, col: 3 });
                     }}
-                    className={`px-4 py-2 border-r border-white/50 whitespace-nowrap ${
+                    className={`px-4 py-2 font-mono border-r border-white/50 whitespace-nowrap text-slate-800 ${
                       activeCell?.row === rIdx && activeCell?.col === 3
+                        ? 'outline-2 outline-emerald-600 -outline-offset-1 bg-emerald-500/15 font-semibold'
+                        : ''
+                    }`}
+                  >
+                    {req.beneficiaryRole === 'Contractor'
+                      ? '—'
+                      : formatAadharFirst4(req.aadharNumber) || '—'}
+                  </td>
+
+                  {/* VEG/NON-VEG */}
+                  <td
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setActiveCell({ row: rIdx, col: 4 });
+                    }}
+                    className={`px-4 py-2 border-r border-white/50 whitespace-nowrap ${
+                      activeCell?.row === rIdx && activeCell?.col === 4
                         ? 'outline-2 outline-emerald-600 -outline-offset-1 bg-emerald-500/15 font-semibold'
                         : ''
                     }`}
@@ -334,14 +353,14 @@ export const ExcelGridViewer: React.FC<ExcelGridViewerProps> = ({
                     </span>
                   </td>
 
-                  {/* TYPE */}
+                  {/* MEAL TIME */}
                   <td
                     onClick={(e) => {
                       e.stopPropagation();
-                      setActiveCell({ row: rIdx, col: 4 });
+                      setActiveCell({ row: rIdx, col: 5 });
                     }}
                     className={`px-4 py-2 border-r border-white/50 whitespace-nowrap font-medium text-slate-800 ${
-                      activeCell?.row === rIdx && activeCell?.col === 4
+                      activeCell?.row === rIdx && activeCell?.col === 5
                         ? 'outline-2 outline-emerald-600 -outline-offset-1 bg-emerald-500/15 font-semibold'
                         : ''
                     }`}
@@ -389,6 +408,7 @@ export const ExcelGridViewer: React.FC<ExcelGridViewerProps> = ({
                     <td className="w-10 px-2 py-1.5 text-center bg-white/30 border-r border-white/50 font-mono text-[11px] text-slate-400">
                       {rowNum}
                     </td>
+                    <td className="px-4 py-1.5 border-r border-white/40"></td>
                     <td className="px-4 py-1.5 border-r border-white/40"></td>
                     <td className="px-4 py-1.5 border-r border-white/40"></td>
                     <td className="px-4 py-1.5 border-r border-white/40"></td>
