@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
-import type { Db } from 'mongodb';
+import type { Db, MongoClientOptions } from 'mongodb';
+import { ServerApiVersion } from 'mongodb';
 import { normalizeFoodRequestDoc, type FoodRequestShape } from './foodRequestNormalize';
 
 export const MONGODB_DB_NAME = 'food_requester';
@@ -36,6 +37,66 @@ export function normalizeMongoUri(raw: string | undefined): string {
     uri = uri.slice(1, -1).trim();
   }
   return uri;
+}
+
+/** Detect common Atlas URI mistakes before connect (Vercel env copy/paste). */
+export function getMongoUriFormatError(uri: string): string | null {
+  if (!uri) return null;
+  if (!/^mongodb(\+srv)?:\/\//.test(uri)) {
+    return 'MONGODB_URI must start with mongodb:// or mongodb+srv://';
+  }
+  const rest = uri.replace(/^mongodb(\+srv)?:\/\//, '');
+  const at = rest.indexOf('@');
+  if (at === -1) {
+    return 'MONGODB_URI must be user:password@host (check username and password).';
+  }
+  const userInfo = rest.slice(0, at);
+  if (userInfo.includes('@')) {
+    return 'Password contains @ — URL-encode as %40 in MONGODB_URI (Vercel env).';
+  }
+  if (!userInfo.includes(':')) {
+    return 'MONGODB_URI must include database username and password before @.';
+  }
+  return null;
+}
+
+/** Shared options for Atlas from serverless (Vercel) and local server. */
+export function getMongoClientOptions(overrides?: MongoClientOptions): MongoClientOptions {
+  return {
+    serverSelectionTimeoutMS: 10000,
+    connectTimeoutMS: 10000,
+    maxPoolSize: 5,
+    maxIdleTimeMS: 60_000,
+    serverApi: {
+      version: ServerApiVersion.v1,
+      strict: true,
+      deprecationErrors: true,
+    },
+    ...overrides,
+  };
+}
+
+/** Plain-language fixes for Atlas TLS / auth errors in logs. */
+export function getMongoConnectionTroubleshooting(errorMessage: string | null): string[] {
+  if (!errorMessage) return [];
+  const lower = errorMessage.toLowerCase();
+  const hints: string[] = [];
+  if (
+    lower.includes('alert internal error') ||
+    lower.includes('err_ssl') ||
+    lower.includes('ssl routines') ||
+    lower.includes('tlsv1 alert')
+  ) {
+    hints.push(
+      'Atlas → Network Access: add 0.0.0.0/0 (Allow from anywhere) for Vercel serverless.',
+      'Atlas → Database Access: confirm DB user + password match MONGODB_URI (URL-encode special chars in password).',
+      'Vercel → Settings → Environment Variables: re-paste MONGODB_URI with no extra quotes/spaces, then Redeploy.',
+    );
+  }
+  if (lower.includes('authentication failed') || lower.includes('bad auth')) {
+    hints.push('Reset the Atlas database user password and update MONGODB_URI on Vercel.');
+  }
+  return hints;
 }
 
 export function isSuperAdminUser(user: Pick<AppUserDoc, 'isSuperAdmin' | 'id' | 'mobileNo'>): boolean {

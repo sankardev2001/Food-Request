@@ -10,6 +10,9 @@ import {
   SUPER_ADMIN_MOBILE,
   normalizeAppUser,
   normalizeMongoUri,
+  getMongoUriFormatError,
+  getMongoClientOptions,
+  getMongoConnectionTroubleshooting,
   readLocalUsersFile,
   readLocalFoodRequestsFile,
   isSuperAdminUser,
@@ -141,6 +144,11 @@ async function getMongoDb(overrideUri?: string) {
     mongoLastError = 'MONGODB_URI contains placeholder values';
     return null;
   }
+  const uriFormatError = getMongoUriFormatError(uri);
+  if (uriFormatError) {
+    mongoLastError = uriFormatError;
+    return null;
+  }
   try {
     if (mongoClient && (!overrideUri || overrideUri === currentMongoUri)) {
       try {
@@ -155,11 +163,7 @@ async function getMongoDb(overrideUri?: string) {
       if (mongoClient) {
         try { await mongoClient.close(); } catch {}
       }
-      mongoClient = new MongoClient(uri, {
-        serverSelectionTimeoutMS: 10000,
-        connectTimeoutMS: 10000,
-        maxPoolSize: 5,
-      });
+      mongoClient = new MongoClient(uri, getMongoClientOptions());
       await mongoClient.connect();
       currentMongoUri = uri;
       mongoLastError = null;
@@ -229,14 +233,18 @@ async function getAllRequests(): Promise<FoodRequestDoc[]> {
 
 // Health check
 app.get('/api/health', async (req: Request, res: Response) => {
+  const uri = normalizeMongoUri(process.env.MONGODB_URI);
   const db = await getMongoDb();
   res.json({
     status: 'ok',
     environment: 'vercel_serverless',
     storage: db ? 'mongodb_atlas' : 'unavailable',
     databaseRequired: true,
-    hasMongoUri: !!normalizeMongoUri(process.env.MONGODB_URI),
+    hasMongoUri: !!uri,
+    mongoUriFormatError: uri ? getMongoUriFormatError(uri) : null,
     mongoError: mongoLastError,
+    mongoHints: getMongoConnectionTroubleshooting(mongoLastError),
+    nodeVersion: process.version,
     timestamp: new Date().toISOString(),
   });
 });
@@ -250,7 +258,7 @@ app.post('/api/mongodb/test', async (req: Request, res: Response) => {
 
   let testClient: MongoClient | null = null;
   try {
-    testClient = new MongoClient(uri, { serverSelectionTimeoutMS: 4000 });
+    testClient = new MongoClient(uri, getMongoClientOptions({ serverSelectionTimeoutMS: 4000 }));
     await testClient.connect();
     await testClient.db('admin').command({ ping: 1 });
     res.json({ success: true, message: 'Successfully connected to MongoDB Atlas!' });
