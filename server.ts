@@ -612,7 +612,7 @@ app.post('/api/requests', requireAuth(), async (req: Request, res: Response) => 
       remarks,
       beneficiaryRole,
     });
-    if (!validation.ok) {
+    if (validation.ok === false) {
       return res.status(400).json({ error: validation.error });
     }
     const auth = req.authUser!;
@@ -702,7 +702,7 @@ app.put('/api/requests/:id', requireAuth(), async (req: Request, res: Response) 
       type,
       remarks,
     });
-    if (!validation.ok) {
+    if (validation.ok === false) {
       return res.status(400).json({ error: validation.error });
     }
     const updated: FoodRequestDoc = {

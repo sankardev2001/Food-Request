@@ -1,20 +1,13 @@
 import type { AuthTokenPayload } from './authSecurity';
+import {
+  normalizeBeneficiaryRole,
+  normalizeFoodRequestDoc,
+  normalizeMealType,
+  type FoodRequestShape,
+} from './foodRequestNormalize';
 
-export interface FoodRequestShape {
-  id: string;
-  date: string;
-  requesterName: string;
-  requesterCps: string;
-  requesterMobile: string;
-  name: string;
-  aadharNumber?: string;
-  beneficiaryRole?: 'CPS' | 'Contractor';
-  vegNonVeg: 'Veg' | 'Non-Veg';
-  type: string;
-  remarks?: string;
-  createdAt: string;
-  createdByRole?: string;
-}
+export type { FoodRequestShape };
+export { normalizeBeneficiaryRole, normalizeFoodRequestDoc, normalizeMealType };
 
 export type EmployerMandatoryField = 'name' | 'aadharNumber';
 
@@ -52,6 +45,10 @@ export function isEmployerRowComplete(row: {
   return !err.name && !err.aadharNumber;
 }
 
+export type EmployerFoodValidation =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly error: string };
+
 export function validateEmployerFoodBody(body: {
   name?: string;
   aadharNumber?: string;
@@ -59,18 +56,18 @@ export function validateEmployerFoodBody(body: {
   type?: string;
   remarks?: string;
   beneficiaryRole?: string;
-}): { ok: true } | { ok: false; error: string } {
+}): EmployerFoodValidation {
   if (!body.name?.trim()) {
-    return { ok: false, error: 'Beneficiary name is required.' };
+    return { ok: false, error: 'Beneficiary name is required.' } as const;
   }
   if (!isAadharFirst4(body.aadharNumber ?? '')) {
-    return { ok: false, error: 'Aadhar first 4 digits must be exactly 4 numbers.' };
+    return { ok: false, error: 'Aadhar first 4 digits must be exactly 4 numbers.' } as const;
   }
   if (!body.vegNonVeg || !['Veg', 'Non-Veg'].includes(body.vegNonVeg)) {
-    return { ok: false, error: 'Food type (Veg/Non-Veg) is required.' };
+    return { ok: false, error: 'Food type (Veg/Non-Veg) is required.' } as const;
   }
   if (!body.type?.trim()) {
-    return { ok: false, error: 'Meal type is required.' };
+    return { ok: false, error: 'Meal type is required.' } as const;
   }
   if (
     body.beneficiaryRole != null &&
@@ -78,44 +75,9 @@ export function validateEmployerFoodBody(body: {
     body.beneficiaryRole !== 'CPS' &&
     body.beneficiaryRole !== 'Contractor'
   ) {
-    return { ok: false, error: 'Role must be CPS or Contractor.' };
+    return { ok: false, error: 'Role must be CPS or Contractor.' } as const;
   }
-  return { ok: true };
-}
-
-export function normalizeMealType(type: string): string {
-  return ['Breakfast', 'Lunch', 'Dinner', 'Snacks'].includes(type) ? type : 'Lunch';
-}
-
-export function normalizeBeneficiaryRole(role: string | undefined): 'CPS' | 'Contractor' {
-  return role === 'Contractor' ? 'Contractor' : 'CPS';
-}
-
-/** Ensure every field is present before MongoDB / JSON persistence. */
-export function normalizeFoodRequestDoc(
-  raw: Record<string, unknown> | FoodRequestShape
-): FoodRequestShape {
-  const mobile = String(raw.requesterMobile ?? raw.requesterCps ?? '').trim();
-  return {
-    id: String(raw.id ?? `req-${Date.now()}-${Math.floor(Math.random() * 1000)}`),
-    date: String(raw.date ?? new Date().toISOString().slice(0, 10)),
-    requesterName: String(raw.requesterName ?? '').trim(),
-    requesterCps: String(raw.requesterCps ?? mobile).trim(),
-    requesterMobile: mobile,
-    name: String(raw.name ?? '').trim(),
-    aadharNumber: raw.aadharNumber != null ? String(raw.aadharNumber).trim() : '',
-    beneficiaryRole: normalizeBeneficiaryRole(
-      raw.beneficiaryRole != null ? String(raw.beneficiaryRole) : undefined
-    ),
-    vegNonVeg: raw.vegNonVeg === 'Non-Veg' ? 'Non-Veg' : 'Veg',
-    type: normalizeMealType(String(raw.type ?? 'Lunch')),
-    remarks: raw.remarks != null ? String(raw.remarks).trim() : '',
-    createdAt: String(raw.createdAt ?? new Date().toISOString()),
-    createdByRole:
-      raw.createdByRole != null && raw.createdByRole !== ''
-        ? String(raw.createdByRole)
-        : undefined,
-  };
+  return { ok: true } as const;
 }
 
 export function buildFoodRequest(

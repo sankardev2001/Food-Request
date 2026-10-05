@@ -1,10 +1,9 @@
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
-import * as XLSX from 'xlsx';
 import { MongoClient } from 'mongodb';
-import { initializeApp, getApps, cert, App } from 'firebase-admin/app';
-import { getDatabase } from 'firebase-admin/database';
+
+type FirebaseDatabase = import('firebase-admin/database').Database;
 import {
   AppUserDoc,
   MONGODB_DB_NAME,
@@ -35,43 +34,42 @@ import {
 } from '../src/foodRequestHelpers';
 import type { AuthTokenPayload } from '../src/authSecurity';
 
-let firebaseAdminApp: App | null = null;
-let fbInitialized = false;
+let firebaseDb: FirebaseDatabase | null = null;
+let firebaseInitPromise: Promise<FirebaseDatabase | null> | null = null;
 
-export const getFirebaseAdminDb = () => {
-  if (!fbInitialized) {
-    try {
-      const serviceAccountRaw = process.env.FIREBASE_SERVICE_ACCOUNT;
-      const databaseURL = process.env.VITE_FIREBASE_DATABASE_URL;
+async function getFirebaseAdminDb(): Promise<FirebaseDatabase | null> {
+  if (firebaseDb) return firebaseDb;
+  if (!firebaseInitPromise) {
+    firebaseInitPromise = (async () => {
+      try {
+        const serviceAccountRaw = process.env.FIREBASE_SERVICE_ACCOUNT;
+        const databaseURL = process.env.VITE_FIREBASE_DATABASE_URL;
+        if (!serviceAccountRaw || !databaseURL) return null;
 
-      if (serviceAccountRaw && databaseURL) {
         const serviceAccount = JSON.parse(serviceAccountRaw);
-        
-        // Fix for dotenv not unescaping \n in the private key
         if (serviceAccount.private_key) {
           serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
         }
-        
-        if (!getApps().length) {
-          firebaseAdminApp = initializeApp({
-            credential: cert(serviceAccount),
-            databaseURL: databaseURL
-          });
-          console.log('Firebase Admin initialized successfully in Serverless.');
-        } else {
-          firebaseAdminApp = getApps()[0]!;
-        }
-      } else {
-        console.warn('Firebase Admin NOT initialized. Missing FIREBASE_SERVICE_ACCOUNT or VITE_FIREBASE_DATABASE_URL in environment.');
-      }
-    } catch (error) {
-      console.error('Failed to initialize Firebase Admin:', error);
-    }
-    fbInitialized = true;
-  }
 
-  return firebaseAdminApp ? getDatabase(firebaseAdminApp) : null;
-};
+        const { initializeApp, getApps, cert } = await import('firebase-admin/app');
+        const { getDatabase } = await import('firebase-admin/database');
+
+        const app = getApps().length
+          ? getApps()[0]!
+          : initializeApp({
+              credential: cert(serviceAccount),
+              databaseURL,
+            });
+        firebaseDb = getDatabase(app);
+        return firebaseDb;
+      } catch (error) {
+        console.error('Failed to initialize Firebase Admin:', error);
+        return null;
+      }
+    })();
+  }
+  return firebaseInitPromise;
+}
 
 const app = express();
 
@@ -436,8 +434,9 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
     if (e instanceof DatabaseUnavailableError) {
       return res.status(503).json({ success: false, error: e.message });
     }
-    console.error(e);
-    res.status(500).json({ success: false, error: 'Login authentication failed.' });
+    console.error('Login error:', e);
+    const message = e instanceof Error ? e.message : 'Login authentication failed.';
+    res.status(500).json({ success: false, error: message });
   }
 });
 
@@ -597,7 +596,7 @@ app.get('/api/requests', requireAuth(), async (req: Request, res: Response) => {
 });
 
 async function notifyNewRequest(saved: FoodRequestDoc) {
-  const adminDb = getFirebaseAdminDb();
+  const adminDb = await getFirebaseAdminDb();
   if (!adminDb) return;
   try {
     await adminDb.ref('/admin_notifications').push({
@@ -625,7 +624,7 @@ app.post('/api/requests', requireAuth(), async (req: Request, res: Response) => 
     type,
     remarks,
   });
-  if (!validation.ok) {
+  if (validation.ok === false) {
     return res.status(400).json({ error: validation.error });
   }
   const newDoc = buildFoodRequest(auth, {
@@ -694,7 +693,7 @@ app.put('/api/requests/:id', requireAuth(), async (req: Request, res: Response) 
     type,
     remarks,
   });
-  if (!validation.ok) {
+  if (validation.ok === false) {
     return res.status(400).json({ error: validation.error });
   }
   const updated: FoodRequestDoc = {
@@ -778,6 +777,7 @@ app.get('/api/requests/export.xlsx', requireAuth({ adminOnly: true }), async (re
     'MOBILE NO': r.requesterMobile,
   }));
 
+  const XLSX = await import('xlsx');
   const worksheet = XLSX.utils.json_to_sheet(rows);
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, 'data collect - admin site');

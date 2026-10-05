@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import type { Db } from 'mongodb';
-import { normalizeFoodRequestDoc, type FoodRequestShape } from './foodRequestHelpers';
+import { normalizeFoodRequestDoc, type FoodRequestShape } from './foodRequestNormalize';
 
 export const MONGODB_DB_NAME = 'food_requester';
 export const SUPER_ADMIN_MOBILE = '9500466927';
