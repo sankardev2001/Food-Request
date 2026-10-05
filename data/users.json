@@ -1,44 +1,22 @@
 [
   {
-    "id": "usr-1788683897481-83",
+    "id": "usr-1791185354893-450",
     "name": "sankar",
-    "cpsNo": "123456789",
-    "mobileNo": "123456789",
-    "password": "123456789",
-    "userType": "admin",
-    "aadharNumber": "123456789",
-    "isSuperAdmin": false,
-    "createdAt": "2026-09-06T08:38:17.481Z"
-  },
-  {
-    "id": "usr-1788683728511-604",
-    "name": "ramesh",
-    "cpsNo": "987654321",
-    "mobileNo": "987654321",
-    "password": "987654321",
+    "team": "sales",
+    "mobileNo": "9345053902",
+    "password": "$2b$12$f3pgV6N.3Q2sZKajXnWk6.onUAVUFlRyih5wSyXOiawAZE9FhI9cO",
     "userType": "employer",
-    "aadharNumber": "987654321",
     "isSuperAdmin": false,
-    "createdAt": "2026-09-06T08:35:28.511Z"
-  },
-  {
-    "id": "usr-1788597003649-523",
-    "name": "sankar",
-    "cpsNo": "4343",
-    "mobileNo": "976543456787654345",
-    "userType": "admin",
-    "aadharNumber": "567876545654",
-    "isSuperAdmin": false,
-    "createdAt": "2026-09-05T08:30:03.649Z"
+    "createdAt": "2026-10-05T07:29:14.893Z"
   },
   {
     "id": "usr-subash-superadmin",
     "name": "subash",
-    "cpsNo": "1234",
+    "team": "Admin",
     "mobileNo": "9500466927",
+    "password": "$2b$12$Kcu1KrDmRPRb5sPwasVo6O2TOhNX6LLkU0UfA4CL0TYDgUigvChg2",
     "userType": "admin",
-    "aadharNumber": "1234",
     "isSuperAdmin": true,
-    "createdAt": "2025-01-01T00:00:00.000Z"
+    "createdAt": "2026-10-05T06:43:05.255Z"
   }
 ]

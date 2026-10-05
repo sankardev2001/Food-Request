@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { apiFetch } from '../apiFetch';
 import { Database, CheckCircle2, AlertCircle, Copy, Check, ExternalLink, RefreshCw, Zap, ShieldCheck } from 'lucide-react';
 
 export const MongoConnectionCard: React.FC = () => {
@@ -41,7 +42,7 @@ export const MongoConnectionCard: React.FC = () => {
     setConnectMessage(null);
 
     try {
-      const res = await fetch('/api/mongodb/test', {
+      const res = await apiFetch('/api/mongodb/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ uri: mongoUriInput.trim() }),
@@ -63,7 +64,7 @@ export const MongoConnectionCard: React.FC = () => {
     setConnecting(true);
     setConnectMessage(null);
     try {
-      const res = await fetch('/api/mongodb/connect', {
+      const res = await apiFetch('/api/mongodb/connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ uri: mongoUriInput.trim() }),
@@ -86,7 +87,7 @@ export const MongoConnectionCard: React.FC = () => {
     setMigrating(true);
     setMigrationResult(null);
     try {
-      const res = await fetch('/api/db/migrate', {
+      const res = await apiFetch('/api/db/migrate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ uri: mongoUriInput.trim() || undefined }),
@@ -105,7 +106,7 @@ export const MongoConnectionCard: React.FC = () => {
     setSeeding(true);
     setSeedingResult(null);
     try {
-      const res = await fetch('/api/db/seed', {
+      const res = await apiFetch('/api/db/seed', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ uri: mongoUriInput.trim() || undefined }),

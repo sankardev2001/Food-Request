@@ -1,9 +1,39 @@
 import express, { Request, Response } from 'express';
 import cors from 'cors';
+import cookieParser from 'cookie-parser';
 import * as XLSX from 'xlsx';
 import { MongoClient } from 'mongodb';
 import { initializeApp, getApps, cert, App } from 'firebase-admin/app';
 import { getDatabase } from 'firebase-admin/database';
+import {
+  AppUserDoc,
+  MONGODB_DB_NAME,
+  SUPER_ADMIN_MOBILE,
+  normalizeAppUser,
+  normalizeMongoUri,
+  readLocalUsersFile,
+  readLocalFoodRequestsFile,
+  isSuperAdminUser,
+  upsertUsersToMongo,
+  upsertFoodRequestsToMongo,
+  DatabaseUnavailableError,
+} from '../src/mongoHelpers';
+import { requireAuth, sanitizeUserForClient } from '../src/authSecurity';
+import {
+  handleLoginRequest,
+  handleLogoutRequest,
+  handleMeRequest,
+  hashPasswordForStorage,
+} from '../src/authHandlers';
+import {
+  buildFoodRequest,
+  canManageRequest,
+  normalizeBeneficiaryRole,
+  normalizeFoodRequestDoc,
+  normalizeMealType,
+  validateEmployerFoodBody,
+} from '../src/foodRequestHelpers';
+import type { AuthTokenPayload } from '../src/authSecurity';
 
 let firebaseAdminApp: App | null = null;
 let fbInitialized = false;
@@ -45,20 +75,11 @@ export const getFirebaseAdminDb = () => {
 
 const app = express();
 
-app.use(cors());
+app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
+app.use(cookieParser());
 
-export interface AppUserDoc {
-  id: string;
-  name: string;
-  cpsNo: string;
-  mobileNo: string;
-  password?: string;
-  userType: 'employer' | 'admin';
-  aadharNumber: string;
-  isSuperAdmin?: boolean;
-  createdAt: string;
-}
+export type { AppUserDoc };
 
 export interface FoodRequestDoc {
   id: string;
@@ -67,9 +88,11 @@ export interface FoodRequestDoc {
   requesterCps: string;
   requesterMobile: string;
   name: string;
-  aadharNumber: string;
+  aadharNumber?: string;
+  beneficiaryRole?: 'CPS' | 'Contractor';
   vegNonVeg: 'Veg' | 'Non-Veg';
   type: 'Breakfast' | 'Lunch' | 'Dinner' | 'Snacks' | string;
+  remarks?: string;
   createdAt: string;
   createdByRole?: string;
 }
@@ -78,25 +101,46 @@ export interface FoodRequestDoc {
 const SEED_SUPER_ADMIN: AppUserDoc = {
   id: 'usr-subash-superadmin',
   name: 'subash',
-  cpsNo: '1234',
-  mobileNo: '9500466927',
+  mobileNo: SUPER_ADMIN_MOBILE,
   password: '1234',
   userType: 'admin',
-  aadharNumber: '1234',
   isSuperAdmin: true,
   createdAt: new Date().toISOString(),
 };
 
-let memoryUsers: AppUserDoc[] = [SEED_SUPER_ADMIN];
-let memoryRequests: FoodRequestDoc[] = [];
-
 let mongoClient: MongoClient | null = null;
-let currentMongoUri: string = process.env.MONGODB_URI || '';
+let currentMongoUri: string = normalizeMongoUri(process.env.MONGODB_URI);
+let mongoLastError: string | null = null;
+let mongoBootstrapped = false;
+
+async function bootstrapMongo(db: ReturnType<MongoClient['db']>) {
+  if (mongoBootstrapped) return;
+  const usersCol = db.collection<AppUserDoc>('users');
+  const adminDoc = await usersCol.findOne({ id: 'usr-subash-superadmin' });
+  if (!adminDoc) {
+    await usersCol.insertOne({ ...SEED_SUPER_ADMIN });
+  }
+  mongoBootstrapped = true;
+}
+
+async function getDbOrThrow() {
+  const db = await getMongoDb();
+  if (!db) {
+    throw new DatabaseUnavailableError(
+      mongoLastError ? `Database unavailable: ${mongoLastError}` : undefined
+    );
+  }
+  return db;
+}
 
 async function getMongoDb(overrideUri?: string) {
-  const uri = overrideUri || currentMongoUri || process.env.MONGODB_URI;
-  if (!uri || uri.trim() === '') return null;
+  const uri = normalizeMongoUri(overrideUri || currentMongoUri || process.env.MONGODB_URI);
+  if (!uri || uri.trim() === '') {
+    mongoLastError = 'MONGODB_URI is not configured';
+    return null;
+  }
   if (uri.includes('<db_password>') || uri.includes('<password>') || uri.includes('<username>')) {
+    mongoLastError = 'MONGODB_URI contains placeholder values';
     return null;
   }
   try {
@@ -113,49 +157,76 @@ async function getMongoDb(overrideUri?: string) {
       if (mongoClient) {
         try { await mongoClient.close(); } catch {}
       }
-      mongoClient = new MongoClient(uri, { serverSelectionTimeoutMS: 4000 });
+      mongoClient = new MongoClient(uri, {
+        serverSelectionTimeoutMS: 10000,
+        connectTimeoutMS: 10000,
+        maxPoolSize: 5,
+      });
       await mongoClient.connect();
       currentMongoUri = uri;
+      mongoLastError = null;
 
-      // Auto-ensure super admin exists in MongoDB
-      const db = mongoClient.db('food_requester');
-      const usersCol = db.collection<AppUserDoc>('users');
-      const adminDoc = await usersCol.findOne({ cpsNo: '1234' });
-      if (!adminDoc) {
-        await usersCol.insertOne({ ...SEED_SUPER_ADMIN });
-      }
+      await bootstrapMongo(mongoClient.db(MONGODB_DB_NAME));
     }
-    return mongoClient.db('food_requester');
-  } catch (err) {
-    console.warn('MongoDB connection error in serverless:', err);
+    const db = mongoClient!.db(MONGODB_DB_NAME);
+    await bootstrapMongo(db);
+    return db;
+  } catch (err: unknown) {
+    mongoLastError = err instanceof Error ? err.message : 'Connection failed';
+    console.warn('MongoDB connection error in serverless:', mongoLastError);
     return null;
   }
 }
 
 async function getAllUsers(): Promise<AppUserDoc[]> {
-  const db = await getMongoDb();
-  if (db) {
-    try {
-      const docs = await db.collection<AppUserDoc>('users').find({}).sort({ createdAt: -1 }).toArray();
-      if (docs.length > 0) return docs;
-    } catch (e) {
-      console.error(e);
-    }
-  }
-  return memoryUsers;
+  const db = await getDbOrThrow();
+  const docs = await db.collection<AppUserDoc>('users').find({}).sort({ createdAt: -1 }).toArray();
+  return docs.map((d) => normalizeAppUser(d as unknown as Record<string, unknown>));
+}
+
+async function saveUser(user: AppUserDoc): Promise<AppUserDoc> {
+  const db = await getDbOrThrow();
+  await db.collection('users').updateOne({ id: user.id }, { $set: user }, { upsert: true });
+  return user;
+}
+
+async function deleteUserById(id: string): Promise<void> {
+  const db = await getDbOrThrow();
+  await db.collection('users').deleteOne({ id });
+}
+
+async function deleteRequestById(id: string): Promise<void> {
+  const db = await getDbOrThrow();
+  await db.collection('food_requests').deleteOne({ id });
+}
+
+async function persistRequest(doc: FoodRequestDoc): Promise<FoodRequestDoc> {
+  const stored = normalizeFoodRequestDoc(
+    doc as unknown as Record<string, unknown>
+  ) as FoodRequestDoc;
+  const db = await getDbOrThrow();
+  await db.collection('food_requests').updateOne(
+    { id: stored.id },
+    { $set: stored },
+    { upsert: true }
+  );
+  return stored;
+}
+
+async function findRequestById(id: string): Promise<FoodRequestDoc | undefined> {
+  return (await getAllRequests()).find((r) => r.id === id);
 }
 
 async function getAllRequests(): Promise<FoodRequestDoc[]> {
-  const db = await getMongoDb();
-  if (db) {
-    try {
-      const docs = await db.collection<FoodRequestDoc>('food_requests').find({}).sort({ createdAt: -1 }).toArray();
-      return docs;
-    } catch (e) {
-      console.error(e);
-    }
-  }
-  return memoryRequests;
+  const db = await getDbOrThrow();
+  const docs = await db
+    .collection<FoodRequestDoc>('food_requests')
+    .find({})
+    .sort({ createdAt: -1 })
+    .toArray();
+  return docs.map((doc) =>
+    normalizeFoodRequestDoc(doc as unknown as Record<string, unknown>)
+  ) as FoodRequestDoc[];
 }
 
 // Health check
@@ -164,8 +235,10 @@ app.get('/api/health', async (req: Request, res: Response) => {
   res.json({
     status: 'ok',
     environment: 'vercel_serverless',
-    storage: db ? 'mongodb_atlas' : 'memory_fallback',
-    hasMongoUri: !!process.env.MONGODB_URI,
+    storage: db ? 'mongodb_atlas' : 'unavailable',
+    databaseRequired: true,
+    hasMongoUri: !!normalizeMongoUri(process.env.MONGODB_URI),
+    mongoError: mongoLastError,
     timestamp: new Date().toISOString(),
   });
 });
@@ -198,11 +271,64 @@ app.post('/api/mongodb/test', async (req: Request, res: Response) => {
 app.post('/api/mongodb/connect', async (req: Request, res: Response) => {
   const { uri } = req.body;
   if (!uri) return res.status(400).json({ success: false, error: 'URI required' });
-  const db = await getMongoDb(uri);
+  mongoBootstrapped = false;
+  const db = await getMongoDb(normalizeMongoUri(uri));
   if (db) {
-    res.json({ success: true, message: 'Connected to MongoDB Atlas successfully!' });
+    const count = await db.collection('users').countDocuments();
+    res.json({
+      success: true,
+      message: 'Connected to MongoDB Atlas. Application data is read from and written to the database only.',
+      userCount: count,
+    });
   } else {
-    res.status(400).json({ success: false, error: 'Failed to connect to MongoDB Atlas.' });
+    res.status(400).json({
+      success: false,
+      error: mongoLastError || 'Failed to connect to MongoDB Atlas.',
+    });
+  }
+});
+
+// Upsert bundled/local users into MongoDB (same data as data/users.json)
+app.post('/api/db/sync-requests', requireAuth({ adminOnly: true }), async (req: Request, res: Response) => {
+  try {
+    const source = readLocalFoodRequestsFile();
+    if (source.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'No food requests in data/food_requests.json to import.',
+      });
+    }
+
+    const db = await getDbOrThrow();
+    const synced = await upsertFoodRequestsToMongo(db, source);
+    const requestCount = await db.collection('food_requests').countDocuments();
+    res.json({ success: true, mode: 'mongodb', synced, requestCount });
+  } catch (err: unknown) {
+    if (err instanceof DatabaseUnavailableError) {
+      return res.status(503).json({ success: false, error: err.message });
+    }
+    const message = err instanceof Error ? err.message : 'Request sync failed';
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+app.post('/api/db/sync-users', requireAuth({ adminOnly: true }), async (req: Request, res: Response) => {
+  try {
+    const source = readLocalUsersFile();
+    if (source.length === 0) {
+      return res.status(400).json({ success: false, error: 'No users in data/users.json to import.' });
+    }
+
+    const db = await getDbOrThrow();
+    const synced = await upsertUsersToMongo(db, source);
+    const userCount = await db.collection('users').countDocuments();
+    res.json({ success: true, mode: 'mongodb', synced, userCount });
+  } catch (err: unknown) {
+    if (err instanceof DatabaseUnavailableError) {
+      return res.status(503).json({ success: false, error: err.message });
+    }
+    const message = err instanceof Error ? err.message : 'Sync failed';
+    res.status(500).json({ success: false, error: message });
   }
 });
 
@@ -228,12 +354,10 @@ app.post('/api/db/migrate', async (req: Request, res: Response) => {
     }
     const usersCol = db.collection('users');
     try {
-      await usersCol.createIndex({ cpsNo: 1 }, { unique: true });
-      details.push('Created unique index on users.cpsNo');
+      await usersCol.createIndex({ mobileNo: 1 }, { unique: true });
+      details.push('Created unique index on users.mobileNo');
     } catch {}
-    await usersCol.createIndex({ mobileNo: 1 });
     await usersCol.createIndex({ userType: 1 });
-
     if (!colNames.includes('food_requests')) {
       await db.createCollection('food_requests');
       details.push('Created "food_requests" collection');
@@ -265,19 +389,14 @@ app.post('/api/db/seed', async (req: Request, res: Response) => {
     const { uri } = req.body;
     const db = await getMongoDb(uri);
     if (!db) {
-      // Memory fallback seed
-      const exists = memoryUsers.some((u) => u.cpsNo === '1234');
-      if (!exists) memoryUsers.unshift(SEED_SUPER_ADMIN);
-      return res.json({
-        success: true,
-        mode: 'memory_fallback',
-        admin: SEED_SUPER_ADMIN,
-        details: ['Seeded Super Admin Subash into in-memory storage.'],
+      return res.status(503).json({
+        success: false,
+        error: mongoLastError || 'MongoDB is required to seed the database.',
       });
     }
 
     const usersCol = db.collection<AppUserDoc>('users');
-    const existing = await usersCol.findOne({ cpsNo: '1234' });
+    const existing = await usersCol.findOne({ id: 'usr-subash-superadmin' });
     let action: 'inserted' | 'updated' = 'updated';
 
     if (!existing) {
@@ -285,13 +404,13 @@ app.post('/api/db/seed', async (req: Request, res: Response) => {
       action = 'inserted';
     } else {
       await usersCol.updateOne(
-        { cpsNo: '1234' },
+        { id: 'usr-subash-superadmin' },
         {
           $set: {
             name: SEED_SUPER_ADMIN.name,
             mobileNo: SEED_SUPER_ADMIN.mobileNo,
+            password: SEED_SUPER_ADMIN.password,
             userType: 'admin',
-            aadharNumber: SEED_SUPER_ADMIN.aadharNumber,
             isSuperAdmin: true,
           },
         }
@@ -310,96 +429,85 @@ app.post('/api/db/seed', async (req: Request, res: Response) => {
   }
 });
 
-// Auth Login
 app.post('/api/auth/login', async (req: Request, res: Response) => {
-  const { mobileNo, password } = req.body;
-  if (!mobileNo || !password) {
-    return res.status(400).json({ error: 'Mobile No and Password are required.' });
+  try {
+    await handleLoginRequest(req, res, { getAllUsers, saveUser });
+  } catch (e) {
+    if (e instanceof DatabaseUnavailableError) {
+      return res.status(503).json({ success: false, error: e.message });
+    }
+    console.error(e);
+    res.status(500).json({ success: false, error: 'Login authentication failed.' });
   }
-
-  const cleanMobile = String(mobileNo).trim();
-  const cleanPassword = String(password).trim().toUpperCase();
-
-  // Check super admin subash
-  if (cleanMobile === '9500466927' && cleanPassword === '1234') {
-    return res.json({
-      success: true,
-      user: {
-        name: 'subash',
-        cpsNo: '1234',
-        mobileNo: '9500466927',
-        role: 'admin',
-        aadharNumber: '1234',
-        isSuperAdmin: true,
-        loggedInAt: new Date().toISOString(),
-      },
-    });
-  }
-
-  const allUsers = await getAllUsers();
-  const user = allUsers.find(
-    (u) => 
-      u.mobileNo.trim() === cleanMobile && 
-      (u.password === password || (!u.password && u.cpsNo.toUpperCase() === cleanPassword))
-  );
-
-  if (!user) {
-    return res.status(401).json({
-      error: `Invalid mobile number or password.`,
-    });
-  }
-
-  res.json({
-    success: true,
-    user: {
-      id: user.id,
-      name: user.name,
-      cpsNo: user.cpsNo,
-      mobileNo: user.mobileNo,
-      role: user.userType,
-      aadharNumber: user.aadharNumber,
-      isSuperAdmin: user.isSuperAdmin,
-      loggedInAt: new Date().toISOString(),
-    },
-  });
 });
 
-// GET /api/users
-app.get('/api/users', async (req: Request, res: Response) => {
-  const users = await getAllUsers();
+app.post('/api/auth/logout', (req: Request, res: Response) => {
+  handleLogoutRequest(req, res);
+});
+
+app.get('/api/auth/me', (req: Request, res: Response) => {
+  handleMeRequest(req, res);
+});
+
+app.get('/api/users', requireAuth({ adminOnly: true }), async (req: Request, res: Response) => {
+  const users = (await getAllUsers()).map(sanitizeUserForClient);
   res.json({ success: true, count: users.length, users });
 });
 
-// POST /api/users
-app.post('/api/users', async (req: Request, res: Response) => {
-  const { name, cpsNo, mobileNo, password, userType, aadharNumber } = req.body;
-  if (!name || !cpsNo || !mobileNo || !password || !userType || !aadharNumber) {
-    return res.status(400).json({ error: 'All fields are required.' });
+app.put('/api/users/:id', requireAuth({ adminOnly: true }), async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { name, team, mobileNo } = req.body;
+  const all = await getAllUsers();
+  const target = all.find((u) => u.id === id);
+  if (!target) return res.status(404).json({ error: 'User not found.' });
+  if (name) target.name = String(name).trim();
+  if (team !== undefined) target.team = String(team).trim();
+  if (mobileNo) {
+    const clean = String(mobileNo).trim();
+    if (all.some((u) => u.id !== id && u.mobileNo.trim() === clean)) {
+      return res.status(400).json({ error: 'Mobile number already in use.' });
+    }
+    target.mobileNo = clean;
+  }
+  const saved = await saveUser(target);
+  res.json({ success: true, user: sanitizeUserForClient(saved) });
+});
+
+app.post('/api/users', requireAuth({ adminOnly: true }), async (req: Request, res: Response) => {
+  const { name, team, mobileNo, password, userType } = req.body;
+  if (!name || !mobileNo || !password || !userType) {
+    return res.status(400).json({ error: 'Name, mobile number, password, and user type are required.' });
   }
 
-  const cleanCps = String(cpsNo).trim().toUpperCase();
+  const cleanMobile = String(mobileNo).trim();
+  const duplicate = (await getAllUsers()).find((u) => u.mobileNo.trim() === cleanMobile);
+  if (duplicate) {
+    return res.status(400).json({
+      error: `A user with mobile number "${cleanMobile}" already exists (${duplicate.name}).`,
+    });
+  }
+
+  const hashed = await hashPasswordForStorage(String(password));
+  if (typeof hashed !== 'string') {
+    return res.status(400).json({ error: hashed.error });
+  }
+
   const newUser: AppUserDoc = {
     id: `usr-${Date.now()}`,
     name: name.trim(),
-    cpsNo: cleanCps,
-    mobileNo: String(mobileNo).trim(),
-    password: String(password).trim(),
+    team: team != null ? String(team).trim() : '',
+    mobileNo: cleanMobile,
+    password: hashed,
     userType: userType === 'admin' ? 'admin' : 'employer',
-    aadharNumber: String(aadharNumber).trim(),
+    isSuperAdmin: false,
     createdAt: new Date().toISOString(),
   };
 
-  const db = await getMongoDb();
-  if (db) {
-    await db.collection('users').insertOne(newUser);
-  }
-  memoryUsers.unshift(newUser);
-
-  res.status(201).json({ success: true, user: newUser });
+  const saved = await saveUser(newUser);
+  res.status(201).json({ success: true, user: sanitizeUserForClient(saved) });
 });
 
-// PUT /api/users/:id/password
-app.put('/api/users/:id/password', async (req: Request, res: Response) => {
+app.put('/api/users/:id/password', requireAuth({ adminOnly: true }), async (req: Request, res: Response) => {
   const { id } = req.params;
   const { newPassword } = req.body;
 
@@ -407,35 +515,35 @@ app.put('/api/users/:id/password', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'New password is required.' });
   }
 
-  const db = await getMongoDb();
-  if (db) {
-    await db.collection('users').updateOne(
-      { id },
-      { $set: { password: newPassword.trim() } }
-    );
+  const hashed = await hashPasswordForStorage(newPassword);
+  if (typeof hashed !== 'string') {
+    return res.status(400).json({ error: hashed.error });
   }
 
-  const targetIdx = memoryUsers.findIndex((u) => u.id === id);
-  if (targetIdx >= 0) {
-    memoryUsers[targetIdx].password = newPassword.trim();
+  const all = await getAllUsers();
+  const target = all.find((u) => u.id === id);
+  if (!target) {
+    return res.status(404).json({ error: 'User not found.' });
   }
+  target.password = hashed;
+  await saveUser(target);
 
   res.json({ success: true, message: 'Password updated.' });
 });
 
-// DELETE /api/users/:id
-app.delete('/api/users/:id', async (req: Request, res: Response) => {
+app.delete('/api/users/:id', requireAuth({ adminOnly: true }), async (req: Request, res: Response) => {
   const { id } = req.params;
-  const db = await getMongoDb();
-  if (db) {
-    await db.collection('users').deleteOne({ id });
+  const target = (await getAllUsers()).find((u) => u.id === id);
+  if (target && isSuperAdminUser(target)) {
+    return res.status(403).json({ error: 'Super Admin subash cannot be deleted.' });
   }
-  memoryUsers = memoryUsers.filter((u) => u.id !== id);
+
+  await deleteUserById(id);
   res.json({ success: true, message: 'User deleted.' });
 });
 
 // GET /api/requests/recent
-app.get('/api/requests/recent', async (req: Request, res: Response) => {
+app.get('/api/requests/recent', requireAuth({ adminOnly: true }), async (req: Request, res: Response) => {
   const since = req.query.since as string;
   if (!since) return res.status(400).json({ error: 'Since timestamp required.' });
 
@@ -446,9 +554,12 @@ app.get('/api/requests/recent', async (req: Request, res: Response) => {
 });
 
 // GET /api/requests
-app.get('/api/requests', async (req: Request, res: Response) => {
+app.get('/api/requests', requireAuth(), async (req: Request, res: Response) => {
   const role = (req.query.role as string) || 'employer';
-  const cpsNo = (req.query.cpsNo as string) || '';
+  if (role === 'admin' && req.authUser?.role !== 'admin') {
+    return res.status(403).json({ error: 'Admin access required.' });
+  }
+  const requesterMobile = (req.query.mobileNo as string) || (req.query.cpsNo as string) || '';
   const date = req.query.date as string;
   const search = ((req.query.search as string) || '').toLowerCase();
   const type = req.query.type as string;
@@ -456,8 +567,18 @@ app.get('/api/requests', async (req: Request, res: Response) => {
   let all = await getAllRequests();
 
   if (role === 'employer') {
-    if (!cpsNo) return res.status(403).json({ error: 'CPS No required for employer access.' });
-    all = all.filter((r) => r.requesterCps.toUpperCase() === cpsNo.toUpperCase());
+    const mobile = (requesterMobile || req.authUser?.mobileNo || '').trim();
+    if (!mobile) {
+      return res.status(403).json({ error: 'Mobile number required for employer access.' });
+    }
+    if (req.authUser?.mobileNo !== mobile) {
+      return res.status(403).json({ error: 'You can only view your own requests.' });
+    }
+    all = all.filter(
+      (r) =>
+        r.requesterMobile.trim() === mobile ||
+        r.requesterCps.toUpperCase() === mobile.toUpperCase()
+    );
   }
 
   if (date) all = all.filter((r) => r.date === date);
@@ -467,7 +588,7 @@ app.get('/api/requests', async (req: Request, res: Response) => {
       (r) =>
         r.name.toLowerCase().includes(search) ||
         r.requesterName.toLowerCase().includes(search) ||
-        r.aadharNumber.includes(search) ||
+        (r.aadharNumber && r.aadharNumber.includes(search)) ||
         r.type.toLowerCase().includes(search)
     );
   }
@@ -475,96 +596,185 @@ app.get('/api/requests', async (req: Request, res: Response) => {
   res.json({ success: true, count: all.length, requests: all });
 });
 
-// POST /api/requests
-app.post('/api/requests', async (req: Request, res: Response) => {
-  const {
-    date,
-    requesterName,
-    requesterCps,
-    requesterMobile,
+async function notifyNewRequest(saved: FoodRequestDoc) {
+  const adminDb = getFirebaseAdminDb();
+  if (!adminDb) return;
+  try {
+    await adminDb.ref('/admin_notifications').push({
+      id: saved.id,
+      createdAt: saved.createdAt,
+      type: saved.type,
+      beneficiaryName: saved.name,
+      requesterName: saved.requesterName,
+      requesterMobile: saved.requesterMobile,
+    });
+  } catch (fbErr) {
+    console.error('Failed to push Firebase notification:', fbErr);
+  }
+}
+
+app.post('/api/requests', requireAuth(), async (req: Request, res: Response) => {
+  const { date, name, vegNonVeg, type, remarks, aadharNumber, beneficiaryRole, createdByRole } =
+    req.body;
+  const auth = req.authUser! as AuthTokenPayload;
+  const validation = validateEmployerFoodBody({
     name,
     aadharNumber,
+    beneficiaryRole,
     vegNonVeg,
     type,
+    remarks,
+  });
+  if (!validation.ok) {
+    return res.status(400).json({ error: validation.error });
+  }
+  const newDoc = buildFoodRequest(auth, {
+    date,
+    name,
+    vegNonVeg,
+    type,
+    remarks,
+    aadharNumber,
+    beneficiaryRole,
     createdByRole,
-  } = req.body;
+  }) as FoodRequestDoc;
+  const saved = await persistRequest(newDoc);
+  await notifyNewRequest(saved);
+  res.status(201).json({ success: true, request: saved });
+});
 
-  if (!name || !aadharNumber || !vegNonVeg || !type) {
-    return res.status(400).json({ error: 'All fields are required.' });
+app.post('/api/requests/bulk', requireAuth(), async (req: Request, res: Response) => {
+  const auth = req.authUser! as AuthTokenPayload;
+  const { date, type, items } = req.body;
+  if (!type || !Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: 'Meal type and request rows are required.' });
   }
+  const savedRows: FoodRequestDoc[] = [];
+  for (const item of items) {
+    const validation = validateEmployerFoodBody({
+      name: item.name,
+      aadharNumber: item.aadharNumber,
+      beneficiaryRole: item.beneficiaryRole,
+      vegNonVeg: item.vegNonVeg || 'Veg',
+      type,
+      remarks: item.remarks,
+    });
+    if (!validation.ok) continue;
+    const doc = buildFoodRequest(auth, {
+      date,
+      name: item.name,
+      vegNonVeg: item.vegNonVeg || 'Veg',
+      type,
+      remarks: item.remarks,
+      aadharNumber: item.aadharNumber,
+      beneficiaryRole: item.beneficiaryRole,
+    }) as FoodRequestDoc;
+    savedRows.push(await persistRequest(doc));
+    await notifyNewRequest(savedRows[savedRows.length - 1]);
+  }
+  if (savedRows.length === 0) {
+    return res.status(400).json({ error: 'No valid rows with beneficiary name.' });
+  }
+  res.status(201).json({ success: true, count: savedRows.length, requests: savedRows });
+});
 
-  const validMealType = ['Breakfast', 'Lunch', 'Dinner', 'Snacks'].includes(type)
-    ? type
-    : type || 'Lunch';
-
-  const newDoc: FoodRequestDoc = {
-    id: `req-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-    date: date || new Date().toISOString().slice(0, 10),
-    requesterName: requesterName || name,
-    requesterCps: requesterCps || 'N/A',
-    requesterMobile: requesterMobile || 'N/A',
-    name: name.trim(),
+app.put('/api/requests/:id', requireAuth(), async (req: Request, res: Response) => {
+  const auth = req.authUser! as AuthTokenPayload;
+  const existing = await findRequestById(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Request not found.' });
+  if (!canManageRequest(auth, existing)) {
+    return res.status(403).json({ error: 'You can only edit your own requests.' });
+  }
+  const { name, vegNonVeg, type, remarks, aadharNumber, beneficiaryRole } = req.body;
+  const validation = validateEmployerFoodBody({
+    name,
+    aadharNumber,
+    beneficiaryRole,
+    vegNonVeg,
+    type,
+    remarks,
+  });
+  if (!validation.ok) {
+    return res.status(400).json({ error: validation.error });
+  }
+  const updated: FoodRequestDoc = {
+    ...existing,
+    name: String(name).trim(),
     aadharNumber: String(aadharNumber).trim(),
+    beneficiaryRole:
+      beneficiaryRole != null
+        ? normalizeBeneficiaryRole(String(beneficiaryRole))
+        : existing.beneficiaryRole || 'CPS',
     vegNonVeg: vegNonVeg === 'Non-Veg' ? 'Non-Veg' : 'Veg',
-    type: validMealType,
-    createdAt: new Date().toISOString(),
-    createdByRole: createdByRole || 'employer',
+    type: normalizeMealType(type),
+    remarks: remarks != null ? String(remarks).trim() : existing.remarks || '',
   };
+  res.json({ success: true, request: await persistRequest(updated) });
+});
 
-  const db = await getMongoDb();
-  if (db) {
-    await db.collection('food_requests').insertOne(newDoc);
+app.put('/api/requests/bulk', requireAuth(), async (req: Request, res: Response) => {
+  const auth = req.authUser! as AuthTokenPayload;
+  const { items } = req.body;
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: 'Items array is required.' });
   }
-  memoryRequests.unshift(newDoc);
-
-  // Push real-time notification to Firebase
-  const adminDb = getFirebaseAdminDb();
-  if (adminDb) {
-    try {
-      await adminDb.ref('/admin_notifications').push({
-        id: newDoc.id,
-        createdAt: newDoc.createdAt,
-        type: newDoc.type,
-        beneficiaryName: newDoc.name,
-        requesterName: newDoc.requesterName,
-        requesterMobile: newDoc.requesterMobile
-      });
-    } catch (fbErr) {
-      console.error('Failed to push Firebase notification:', fbErr);
-    }
+  const updated: FoodRequestDoc[] = [];
+  for (const item of items) {
+    if (!item.id) continue;
+    const existing = await findRequestById(item.id);
+    if (!existing || !canManageRequest(auth, existing)) continue;
+    const validation = validateEmployerFoodBody({
+      name: item.name,
+      aadharNumber: item.aadharNumber ?? existing.aadharNumber,
+      beneficiaryRole: item.beneficiaryRole ?? existing.beneficiaryRole,
+      vegNonVeg: item.vegNonVeg,
+      type: item.type,
+      remarks: item.remarks,
+    });
+    if (!validation.ok) continue;
+    updated.push(
+      await persistRequest({
+        ...existing,
+        name: item.name!.trim(),
+        aadharNumber: String(item.aadharNumber ?? existing.aadharNumber ?? '').trim(),
+        beneficiaryRole: normalizeBeneficiaryRole(
+          item.beneficiaryRole ?? existing.beneficiaryRole ?? 'CPS'
+        ),
+        vegNonVeg: item.vegNonVeg === 'Non-Veg' ? 'Non-Veg' : 'Veg',
+        type: normalizeMealType(item.type!),
+        remarks: item.remarks != null ? String(item.remarks).trim() : existing.remarks || '',
+      })
+    );
   }
-
-  res.status(201).json({ success: true, request: newDoc });
+  if (updated.length === 0) return res.status(400).json({ error: 'No requests updated.' });
+  res.json({ success: true, count: updated.length, requests: updated });
 });
 
 // DELETE /api/requests/:id
-app.delete('/api/requests/:id', async (req: Request, res: Response) => {
-  const { role } = req.query;
-  if (role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
-  const { id } = req.params;
-
-  const db = await getMongoDb();
-  if (db) {
-    await db.collection('food_requests').deleteOne({ id });
+app.delete('/api/requests/:id', requireAuth({ adminOnly: true }), async (req: Request, res: Response) => {
+  try {
+    await deleteRequestById(req.params.id);
+    res.json({ success: true, message: 'Deleted' });
+  } catch (err: unknown) {
+    if (err instanceof DatabaseUnavailableError) {
+      return res.status(503).json({ success: false, error: err.message });
+    }
+    throw err;
   }
-  memoryRequests = memoryRequests.filter((r) => r.id !== id);
-  res.json({ success: true, message: 'Deleted' });
 });
 
 // Export Excel
-app.get('/api/requests/export.xlsx', async (req: Request, res: Response) => {
-  const { role } = req.query;
-  if (role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
-
+app.get('/api/requests/export.xlsx', requireAuth({ adminOnly: true }), async (req: Request, res: Response) => {
   const all = await getAllRequests();
   const rows = all.map((r) => ({
     DATE: r.date,
     'REQUESTER NAME': r.requesterName,
     NAME: r.name,
-    'AADHAR NUMBER': r.aadharNumber,
+    'AADHAR FIRST 4': r.aadharNumber || '',
+    ROLES: r.beneficiaryRole || 'CPS',
     'VEG/NON-VEG': r.vegNonVeg,
     TYPE: r.type,
-    'CPS NO': r.requesterCps,
+    REMARK: r.remarks || '',
     'MOBILE NO': r.requesterMobile,
   }));
 
@@ -582,10 +792,7 @@ app.get('/api/requests/export.xlsx', async (req: Request, res: Response) => {
 });
 
 // GET /api/stats
-app.get('/api/stats', async (req: Request, res: Response) => {
-  const { role } = req.query;
-  if (role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
-
+app.get('/api/stats', requireAuth({ adminOnly: true }), async (req: Request, res: Response) => {
   const all = await getAllRequests();
   const todayStr = new Date().toISOString().slice(0, 10);
   res.json({
@@ -601,6 +808,14 @@ app.get('/api/stats', async (req: Request, res: Response) => {
       todayCount: all.filter((r) => r.date === todayStr).length,
     },
   });
+});
+
+app.use((err: unknown, _req: Request, res: Response, _next: () => void) => {
+  if (err instanceof DatabaseUnavailableError) {
+    return res.status(503).json({ success: false, error: err.message });
+  }
+  console.error(err);
+  res.status(500).json({ success: false, error: 'Internal server error.' });
 });
 
 export default app;

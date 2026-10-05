@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { AppUser, UserRole } from '../types';
+import { apiFetch } from '../apiFetch';
 import {
   Users,
   UserPlus,
@@ -10,36 +11,32 @@ import {
   CheckCircle2,
   AlertCircle,
   RefreshCw,
-  Phone,
-  CreditCard,
-  Hash,
   KeyRound,
+  Pencil,
 } from 'lucide-react';
 
-interface UserManagementProps {
-  currentCps: string;
-}
-
-export const UserManagement: React.FC<UserManagementProps> = ({ currentCps }) => {
+export const UserManagement: React.FC = () => {
   const [users, setUsers] = useState<AppUser[]>([]);
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // New User Form State
   const [name, setName] = useState('');
-  const [cpsNo, setCpsNo] = useState('');
+  const [team, setTeam] = useState('');
   const [mobileNo, setMobileNo] = useState('');
+  const [editingUser, setEditingUser] = useState<AppUser | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editTeam, setEditTeam] = useState('');
+  const [editMobile, setEditMobile] = useState('');
   const [password, setPassword] = useState('');
   const [userType, setUserType] = useState<UserRole>('employer');
-  const [aadharNumber, setAadharNumber] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
   const fetchUsers = async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/users');
+      const res = await apiFetch('/api/users');
       const data = await res.json();
       if (data.success) {
         setUsers(data.users);
@@ -60,23 +57,22 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentCps }) =>
     setErrorMessage(null);
     setActionMessage(null);
 
-    if (!name.trim() || !cpsNo.trim() || !mobileNo.trim() || !password.trim() || !aadharNumber.trim()) {
-      setErrorMessage('Please fill in all required fields (Name, CPS No, Mobile No, Password, Aadhar).');
+    if (!name.trim() || !mobileNo.trim() || !password.trim()) {
+      setErrorMessage('Please fill in Name, Mobile Number, and Password.');
       return;
     }
 
     setSubmitting(true);
     try {
-      const res = await fetch('/api/users', {
+      const res = await apiFetch('/api/users', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: name.trim(),
-          cpsNo: cpsNo.trim().toUpperCase(),
+          team: team.trim(),
           mobileNo: mobileNo.trim(),
           password: password.trim(),
           userType,
-          aadharNumber: aadharNumber.trim(),
         }),
       });
 
@@ -86,35 +82,34 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentCps }) =>
       }
 
       setActionMessage(
-        `Successfully added ${userType === 'admin' ? 'Admin' : 'Employee'} "${name}" (CPS: ${cpsNo.toUpperCase()}) to the User Table!`
+        `Successfully added ${userType === 'admin' ? 'Admin' : 'Employee'} "${name}" (Mobile: ${mobileNo.trim()}).`
       );
-      // Reset form
       setName('');
-      setCpsNo('');
+      setTeam('');
       setMobileNo('');
       setPassword('');
-      setAadharNumber('');
       setUserType('employer');
       fetchUsers();
-    } catch (err: any) {
-      setErrorMessage(err.message || 'Error adding user.');
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Error adding user.';
+      setErrorMessage(message);
     } finally {
       setSubmitting(false);
     }
   };
 
-  const handleDeleteUser = async (id: string, userName: string, userCps: string) => {
-    if (userCps === '1234') {
-      alert('Cannot delete the primary Super Admin (subash - CPS: 1234).');
+  const handleDeleteUser = async (id: string, userName: string, isSuper: boolean) => {
+    if (isSuper) {
+      alert('Cannot delete the primary Super Admin (subash).');
       return;
     }
 
-    if (!confirm(`Are you sure you want to remove ${userName} (CPS: ${userCps}) from the user table?`)) {
+    if (!confirm(`Are you sure you want to remove ${userName} from the user table?`)) {
       return;
     }
 
     try {
-      const res = await fetch(`/api/users/${id}`, { method: 'DELETE' });
+      const res = await apiFetch(`/api/users/${id}`, { method: 'DELETE' });
       const data = await res.json();
       if (data.success) {
         setActionMessage(`User "${userName}" removed from user table.`);
@@ -127,6 +122,35 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentCps }) =>
     }
   };
 
+  const openEditUser = (u: AppUser) => {
+    setEditingUser(u);
+    setEditName(u.name);
+    setEditTeam(u.team || '');
+    setEditMobile(u.mobileNo);
+  };
+
+  const handleSaveEditUser = async () => {
+    if (!editingUser) return;
+    try {
+      const res = await apiFetch(`/api/users/${editingUser.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: editName.trim(),
+          team: editTeam.trim(),
+          mobileNo: editMobile.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Update failed.');
+      setActionMessage(`Updated user "${editName}".`);
+      setEditingUser(null);
+      fetchUsers();
+    } catch (err: unknown) {
+      setErrorMessage(err instanceof Error ? err.message : 'Update failed.');
+    }
+  };
+
   const handleResetPassword = async (id: string, userName: string) => {
     const newPassword = window.prompt(`Enter new password for ${userName}:`);
     if (!newPassword || !newPassword.trim()) {
@@ -134,7 +158,7 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentCps }) =>
     }
 
     try {
-      const res = await fetch(`/api/users/${id}/password`, {
+      const res = await apiFetch(`/api/users/${id}/password`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ newPassword: newPassword.trim() }),
@@ -156,9 +180,8 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentCps }) =>
     const q = searchQuery.toLowerCase();
     return (
       u.name.toLowerCase().includes(q) ||
-      u.cpsNo.toLowerCase().includes(q) ||
+      (u.team || '').toLowerCase().includes(q) ||
       u.mobileNo.includes(q) ||
-      u.aadharNumber.includes(q) ||
       u.userType.toLowerCase().includes(q)
     );
   });
@@ -168,7 +191,6 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentCps }) =>
 
   return (
     <div className="space-y-6">
-      {/* Top Banner & KPI Counts */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="bg-white/60 backdrop-blur-xl p-5 rounded-[2rem] border border-white/60 shadow-lg flex items-center justify-between">
           <div>
@@ -210,7 +232,6 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentCps }) =>
         </div>
       </div>
 
-      {/* Messages */}
       {actionMessage && (
         <div className="p-4 rounded-2xl bg-emerald-500/15 backdrop-blur-md border border-emerald-500/30 text-emerald-900 text-xs flex items-center gap-2.5 shadow-xs">
           <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
@@ -226,7 +247,6 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentCps }) =>
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Form: Add New Employee / Admin */}
         <div className="lg:col-span-5">
           <div className="bg-white/60 backdrop-blur-2xl rounded-[2.5rem] shadow-xl border border-white/60 overflow-hidden">
             <div className="bg-white/40 backdrop-blur-xl px-6 py-5 border-b border-white/40 flex items-center justify-between">
@@ -236,13 +256,12 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentCps }) =>
                 </div>
                 <div>
                   <h3 className="font-bold text-sm text-slate-800">Add New User</h3>
-                  <p className="text-[11px] text-slate-500">Insert record into `users` table</p>
+                  <p className="text-[11px] text-slate-500">Name, mobile, and password</p>
                 </div>
               </div>
             </div>
 
             <form onSubmit={handleAddUser} className="p-6 space-y-4">
-              {/* User Type Selector */}
               <div>
                 <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
                   * User Type (Role)
@@ -275,7 +294,6 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentCps }) =>
                 </div>
               </div>
 
-              {/* Full Name */}
               <div>
                 <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
                   * Full Name
@@ -290,22 +308,19 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentCps }) =>
                 />
               </div>
 
-              {/* CPS No */}
               <div>
                 <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                  * CPS No
+                  Team
                 </label>
                 <input
                   type="text"
-                  required
-                  value={cpsNo}
-                  onChange={(e) => setCpsNo(e.target.value.toUpperCase())}
-                  placeholder="e.g. 1234 or CPS10992"
-                  className="w-full px-3.5 py-2.5 text-xs font-mono uppercase rounded-xl border border-white/70 bg-white/70 backdrop-blur-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:bg-white focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/15 shadow-xs"
+                  value={team}
+                  onChange={(e) => setTeam(e.target.value)}
+                  placeholder="e.g. Operations"
+                  className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-white/70 bg-white/70 backdrop-blur-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:bg-white focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/15 shadow-xs"
                 />
               </div>
 
-              {/* Mobile Number */}
               <div>
                 <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
                   * Mobile Number
@@ -320,34 +335,18 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentCps }) =>
                 />
               </div>
 
-              {/* Password */}
               <div>
                 <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
                   * Password
                 </label>
                 <input
-                  type="text"
+                  type="password"
                   required
+                  autoComplete="new-password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="Set initial password"
                   className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-white/70 bg-white/70 backdrop-blur-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:bg-white focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/15 shadow-xs"
-                />
-              </div>
-
-              {/* Aadhar Number */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                  * Aadhar Number (or First 4)
-                </label>
-                <input
-                  type="text"
-                  required
-                  maxLength={12}
-                  value={aadharNumber}
-                  onChange={(e) => setAadharNumber(e.target.value.replace(/[^0-9]/g, ''))}
-                  placeholder="e.g. 4821 or 12-digit number"
-                  className="w-full px-3.5 py-2.5 text-xs font-mono rounded-xl border border-white/70 bg-white/70 backdrop-blur-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:bg-white focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/15 shadow-xs"
                 />
               </div>
 
@@ -365,10 +364,8 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentCps }) =>
           </div>
         </div>
 
-        {/* List of Users in User Table */}
         <div className="lg:col-span-7">
           <div className="bg-white/60 backdrop-blur-2xl rounded-[2.5rem] shadow-xl border border-white/60 overflow-hidden flex flex-col h-full">
-            {/* Header with Search and Refresh */}
             <div className="bg-white/40 backdrop-blur-xl px-6 py-4 border-b border-white/40 flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-2">
                 <Users className="w-4 h-4 text-emerald-600" />
@@ -401,40 +398,38 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentCps }) =>
               </div>
             </div>
 
-            {/* Users Table */}
             <div className="overflow-x-auto flex-1">
               <table className="w-full text-left border-collapse text-xs">
                 <thead>
                   <tr className="bg-white/50 text-slate-600 font-bold uppercase tracking-wider border-b border-white/60">
-                    <th className="px-4 py-3">CPS No</th>
                     <th className="px-4 py-3">Name</th>
+                    <th className="px-4 py-3">Team</th>
                     <th className="px-4 py-3">Mobile No</th>
                     <th className="px-4 py-3">User Type</th>
-                    <th className="px-4 py-3">Aadhar</th>
                     <th className="px-4 py-3 text-center">Action</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/40">
                   {filteredUsers.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="px-6 py-8 text-center text-slate-400">
+                      <td colSpan={5} className="px-6 py-8 text-center text-slate-400">
                         No users found matching your search.
                       </td>
                     </tr>
                   ) : (
                     filteredUsers.map((u) => {
-                      const isSuper = u.cpsNo === '1234' || u.isSuperAdmin;
+                      const isSuper = !!u.isSuperAdmin || u.id === 'usr-subash-superadmin';
                       return (
                         <tr key={u.id} className="hover:bg-white/70 transition-colors">
-                          <td className="px-4 py-3 font-mono font-bold text-slate-800">
-                            {u.cpsNo}
+                          <td className="px-4 py-3 font-semibold text-slate-900">
+                            {u.name}
                             {isSuper && (
                               <span className="ml-1.5 text-[9px] bg-amber-500/20 text-amber-900 border border-amber-500/30 px-1.5 py-0.2 rounded font-sans">
                                 Super
                               </span>
                             )}
                           </td>
-                          <td className="px-4 py-3 font-semibold text-slate-900">{u.name}</td>
+                          <td className="px-4 py-3 text-slate-700">{u.team || '—'}</td>
                           <td className="px-4 py-3 font-mono text-slate-600">{u.mobileNo}</td>
                           <td className="px-4 py-3">
                             <span
@@ -452,12 +447,19 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentCps }) =>
                               <span>{u.userType === 'admin' ? 'Admin' : 'Employer'}</span>
                             </span>
                           </td>
-                          <td className="px-4 py-3 font-mono text-slate-600">{u.aadharNumber}</td>
                           <td className="px-4 py-3 text-center">
                             {isSuper ? (
                               <span className="text-[10px] text-slate-400 italic">Protected</span>
                             ) : (
                               <div className="flex items-center justify-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => openEditUser(u)}
+                                  className="p-1.5 rounded-lg text-slate-500 hover:text-slate-800 hover:bg-slate-500/10 transition-colors cursor-pointer"
+                                  title={`Edit ${u.name}`}
+                                >
+                                  <Pencil className="w-3.5 h-3.5" />
+                                </button>
                                 <button
                                   type="button"
                                   onClick={() => handleResetPassword(u.id, u.name)}
@@ -468,7 +470,7 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentCps }) =>
                                 </button>
                                 <button
                                   type="button"
-                                  onClick={() => handleDeleteUser(u.id, u.name, u.cpsNo)}
+                                  onClick={() => handleDeleteUser(u.id, u.name, isSuper)}
                                   className="p-1.5 rounded-lg text-rose-500 hover:text-rose-700 hover:bg-rose-500/10 transition-colors cursor-pointer"
                                   title={`Delete ${u.name}`}
                                 >
@@ -486,14 +488,60 @@ export const UserManagement: React.FC<UserManagementProps> = ({ currentCps }) =>
             </div>
 
             <div className="bg-white/40 px-6 py-3 border-t border-white/40 text-[11px] text-slate-500 flex items-center justify-between">
-              <span>
-                Employees added here can immediately log in on the Login Page using their CPS No & Mobile.
-              </span>
+              <span>Users log in with Mobile Number and Password.</span>
               <span className="font-mono text-slate-600">Table: users</span>
             </div>
           </div>
         </div>
       </div>
+
+      {editingUser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-xl border border-white/80 p-6 w-full max-w-md space-y-4">
+            <h4 className="font-bold text-slate-800">Edit user</h4>
+            <div>
+              <label className="text-xs font-bold uppercase text-slate-600">Full Name</label>
+              <input
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                className="mt-1 w-full px-3 py-2 rounded-xl border text-sm"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-bold uppercase text-slate-600">Team</label>
+              <input
+                value={editTeam}
+                onChange={(e) => setEditTeam(e.target.value)}
+                className="mt-1 w-full px-3 py-2 rounded-xl border text-sm"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-bold uppercase text-slate-600">Mobile</label>
+              <input
+                value={editMobile}
+                onChange={(e) => setEditMobile(e.target.value)}
+                className="mt-1 w-full px-3 py-2 rounded-xl border text-sm font-mono"
+              />
+            </div>
+            <div className="flex gap-2 justify-end pt-2">
+              <button
+                type="button"
+                onClick={() => setEditingUser(null)}
+                className="px-4 py-2 text-xs font-bold rounded-xl border cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveEditUser}
+                className="px-4 py-2 text-xs font-bold rounded-xl bg-emerald-500 text-white cursor-pointer"
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

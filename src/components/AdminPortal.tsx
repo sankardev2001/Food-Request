@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { UserProfile, FoodRequest, FoodStats, FoodType, MealType } from '../types';
+import { apiFetch } from '../apiFetch';
 import { ExcelGridViewer } from './ExcelGridViewer';
 import { UserManagement } from './UserManagement';
 import {
@@ -56,10 +57,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ user, onOpenDeployGuid
   }, []);
 
   // Admin Food Request Form state
-  const [formDate, setFormDate] = useState<string>(new Date().toISOString().slice(0, 10));
-  const [requesterName, setRequesterName] = useState(user.name);
+  const formDate = new Date().toISOString().slice(0, 10);
   const [beneficiaryName, setBeneficiaryName] = useState('');
-  const [aadharNumber, setAadharNumber] = useState('');
   const [vegNonVeg, setVegNonVeg] = useState<FoodType>('Veg');
   // Updated Meal Type: Breakfast, Lunch, Dinner, Snacks
   const [type, setType] = useState<MealType>('Lunch');
@@ -72,14 +71,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ user, onOpenDeployGuid
         await new Promise((resolve) => setTimeout(resolve, 600));
       }
       // 1. Fetch all requests
-      const res = await fetch(`/api/requests?role=admin`);
+      const res = await apiFetch(`/api/requests?role=admin`);
       const data = await res.json();
       if (data.success) {
         setRequests(data.requests);
       }
 
       // 2. Fetch stats
-      const statsRes = await fetch(`/api/stats?role=admin`);
+      const statsRes = await apiFetch(`/api/stats?role=admin`);
       const statsData = await statsRes.json();
       if (statsData.success) {
         setStats(statsData.stats);
@@ -143,7 +142,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ user, onOpenDeployGuid
 
   const handleDeleteRequest = async (id: string) => {
     try {
-      const res = await fetch(`/api/requests/${id}?role=admin`, {
+      const res = await apiFetch(`/api/requests/${id}?role=admin`, {
         method: 'DELETE',
       });
       const data = await res.json();
@@ -159,8 +158,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ user, onOpenDeployGuid
 
   const handleAdminFormSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!beneficiaryName.trim() || !aadharNumber.trim()) {
-      alert('Please fill in Beneficiary Name and Aadhar Number.');
+    if (!beneficiaryName.trim()) {
+      alert('Please enter beneficiary name.');
       return;
     }
 
@@ -168,17 +167,16 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ user, onOpenDeployGuid
     try {
       const payload = {
         date: formDate,
-        requesterName: requesterName.trim() || user.name,
-        requesterCps: user.cpsNo,
+        requesterName: user.name,
+        requesterCps: user.mobileNo,
         requesterMobile: user.mobileNo,
         name: beneficiaryName.trim(),
-        aadharNumber: aadharNumber.trim(),
         vegNonVeg,
         type,
         createdByRole: 'admin',
       };
 
-      const res = await fetch('/api/requests', {
+      const res = await apiFetch('/api/requests', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -194,7 +192,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ user, onOpenDeployGuid
 
       // Reset form
       setBeneficiaryName('');
-      setAadharNumber('');
 
       // Refresh list & switch back to excel view
       await fetchRequestsAndStats();
@@ -216,11 +213,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ user, onOpenDeployGuid
               Administrator Master Console
             </h1>
             <span className="bg-amber-500/15 text-amber-900 text-xs font-bold px-3 py-1 rounded-full border border-amber-500/30 uppercase tracking-wider">
-              {user.cpsNo === '1234' ? 'Super Admin' : 'Admin'}
+              {user.isSuperAdmin ? 'Super Admin' : 'Admin'}
             </span>
           </div>
           <p className="text-xs text-slate-500 mt-1.5 font-medium">
-            Logged in as <strong className="text-slate-800">{user.name}</strong> (CPS: {user.cpsNo}) • Mobile: {user.mobileNo}
+            Logged in as <strong className="text-slate-800">{user.name}</strong> • Mobile: {user.mobileNo}
           </p>
         </div>
 
@@ -462,7 +459,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ user, onOpenDeployGuid
       )}
 
       {activeTab === 'users' && (
-        <UserManagement currentCps={user.cpsNo} />
+        <UserManagement />
       )}
 
       {activeTab === 'add-form' && (
@@ -485,10 +482,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ user, onOpenDeployGuid
                 </label>
                 <input
                   type="date"
-                  required
+                  readOnly
+                  disabled
                   value={formDate}
-                  onChange={(e) => setFormDate(e.target.value)}
-                  className="w-full px-4 py-2.5 rounded-xl border border-white/70 bg-white/70 backdrop-blur-sm text-sm font-medium text-slate-800 focus:outline-none focus:bg-white focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/15 shadow-xs transition-all"
+                  className="w-full px-4 py-2.5 rounded-xl border border-white/70 bg-white/40 backdrop-blur-sm text-sm font-medium text-slate-500 cursor-not-allowed shadow-xs"
                 />
               </div>
 
@@ -498,11 +495,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ user, onOpenDeployGuid
                 </label>
                 <input
                   type="text"
-                  required
-                  value={requesterName}
-                  onChange={(e) => setRequesterName(e.target.value)}
-                  placeholder="Requester Name"
-                  className="w-full px-4 py-2.5 rounded-xl border border-white/70 bg-white/70 backdrop-blur-sm text-sm font-medium text-slate-800 focus:outline-none focus:bg-white focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/15 shadow-xs transition-all"
+                  readOnly
+                  disabled
+                  value={user.name}
+                  className="w-full px-4 py-2.5 rounded-xl border border-white/70 bg-white/40 backdrop-blur-sm text-sm font-medium text-slate-500 cursor-not-allowed shadow-xs"
                 />
               </div>
             </div>
@@ -518,21 +514,6 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ user, onOpenDeployGuid
                 onChange={(e) => setBeneficiaryName(e.target.value)}
                 placeholder="Enter Beneficiary Name"
                 className="w-full px-4 py-2.5 rounded-xl border border-white/70 bg-white/70 backdrop-blur-sm text-sm font-medium text-slate-800 placeholder:text-slate-400 focus:outline-none focus:bg-white focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/15 shadow-xs transition-all"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
-                * Aadhar First 4 Number
-              </label>
-              <input
-                type="text"
-                required
-                maxLength={12}
-                value={aadharNumber}
-                onChange={(e) => setAadharNumber(e.target.value.replace(/[^0-9]/g, ''))}
-                placeholder="e.g. 4821 or full Aadhar"
-                className="w-full px-4 py-2.5 rounded-xl border border-white/70 bg-white/70 backdrop-blur-sm text-sm font-mono font-medium text-slate-800 placeholder:text-slate-400 focus:outline-none focus:bg-white focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/15 shadow-xs transition-all"
               />
             </div>
 

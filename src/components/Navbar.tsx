@@ -55,7 +55,7 @@ export const Navbar: React.FC<NavbarProps> = ({ user, onLogout, onOpenDeployGuid
                       </span>
                     </div>
                     <div className="text-[11px] text-slate-500 font-medium">
-                      CPS: <span className="font-mono font-semibold text-slate-700">{user.cpsNo}</span> | Mob: {user.mobileNo}
+                      Mob: <span className="font-mono font-semibold text-slate-700">{user.mobileNo}</span>
                     </div>
                   </div>
                 </div>

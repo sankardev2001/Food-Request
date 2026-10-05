@@ -70,11 +70,11 @@ export async function runMigration(explicitUri?: string): Promise<{
       const usersCol = db.collection('users');
       // Create indexes for users
       try {
-        await usersCol.createIndex({ cpsNo: 1 }, { unique: true, name: 'idx_users_cpsNo_unique' });
-        details.push('Created unique index on users.cpsNo');
-        console.log('✅ Created unique index: users.cpsNo');
+        await usersCol.createIndex({ mobileNo: 1 }, { unique: true, name: 'idx_users_mobileNo_unique' });
+        details.push('Created unique index on users.mobileNo');
+        console.log('✅ Created unique index: users.mobileNo');
       } catch (idxErr: any) {
-        details.push(`Index users.cpsNo exists or verified: ${idxErr.message || 'ok'}`);
+        details.push(`Index users.mobileNo exists or verified: ${idxErr.message || 'ok'}`);
       }
 
       await usersCol.createIndex({ mobileNo: 1 }, { name: 'idx_users_mobileNo' });

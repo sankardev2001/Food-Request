@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { UserProfile, UserRole } from '../types';
-import { Shield, User, Lock, ArrowRight, CheckCircle2, AlertCircle } from 'lucide-react';
+import { UserProfile } from '../types';
+import { Shield, ArrowRight } from 'lucide-react';
+import { apiFetch } from '../apiFetch';
 
 interface LoginPageProps {
   onLoginSuccess: (user: UserProfile) => void;
@@ -28,7 +29,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
 
     setLoading(true);
     try {
-      const response = await fetch('/api/auth/login', {
+      const response = await apiFetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -47,17 +48,6 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
       setError(err.message || 'Login failed. Please check credentials.');
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handleQuickFill = (type: UserRole) => {
-    setError(null);
-    if (type === 'admin') {
-      setMobileNo('9500466927');
-      setPassword('1234');
-    } else {
-      setMobileNo('9500466927');
-      setPassword('1234');
     }
   };
 
@@ -126,6 +116,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
                     type="password"
                     id="login-password"
                     required
+                    autoComplete="current-password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="Enter Password"

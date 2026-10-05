@@ -2,20 +2,16 @@ import { MongoClient } from 'mongodb';
 import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
+import { SUPER_ADMIN_MOBILE, normalizeAppUser } from '../src/mongoHelpers';
 
 dotenv.config();
 
-// Exact Super Admin requested by user:
-// Name: subash
-// CPS No : 1234
-// mobile number : 9500466927
 export const SEED_SUPER_ADMIN = {
   id: 'usr-subash-superadmin',
   name: 'subash',
-  cpsNo: '1234',
-  mobileNo: '9500466927',
+  mobileNo: SUPER_ADMIN_MOBILE,
+  password: '1234',
   userType: 'admin' as const,
-  aadharNumber: '1234',
   isSuperAdmin: true,
   createdAt: new Date().toISOString(),
 };
@@ -44,10 +40,8 @@ export async function runSeeding(explicitUri?: string): Promise<{
   console.log('----------------------------------------------------');
   console.log(`👤 Target Super Admin User:`);
   console.log(`   - Name:          ${SEED_SUPER_ADMIN.name}`);
-  console.log(`   - CPS No:        ${SEED_SUPER_ADMIN.cpsNo}`);
   console.log(`   - Mobile Number: ${SEED_SUPER_ADMIN.mobileNo}`);
   console.log(`   - Role/Type:     ${SEED_SUPER_ADMIN.userType} (Super Admin)`);
-  console.log(`   - Aadhar No:     ${SEED_SUPER_ADMIN.aadharNumber}`);
   console.log('----------------------------------------------------');
 
   let activeUri = uri;
@@ -71,59 +65,45 @@ export async function runSeeding(explicitUri?: string): Promise<{
       client = new MongoClient(uri, { serverSelectionTimeoutMS: 6000 });
       await client.connect();
 
-      const db = client.db();
+      const db = client.db('food_requester');
       const usersCol = db.collection('users');
 
-      // Check for existing super admin by CPS No
-      const existing = await usersCol.findOne({ cpsNo: SEED_SUPER_ADMIN.cpsNo });
+      const existing = await usersCol.findOne({ id: SEED_SUPER_ADMIN.id });
       let action: 'inserted' | 'updated' | 'already_exists' = 'already_exists';
 
       if (!existing) {
         await usersCol.insertOne({ ...SEED_SUPER_ADMIN });
         action = 'inserted';
-        details.push(`Created Super Admin ${SEED_SUPER_ADMIN.name} (CPS: ${SEED_SUPER_ADMIN.cpsNo}) in MongoDB`);
+        details.push(`Created Super Admin ${SEED_SUPER_ADMIN.name} in MongoDB`);
         console.log(`✅ Inserted Super Admin "${SEED_SUPER_ADMIN.name}" into MongoDB users collection.`);
       } else {
-        // Update to ensure super admin privileges and correct phone number
         await usersCol.updateOne(
-          { cpsNo: SEED_SUPER_ADMIN.cpsNo },
+          { id: SEED_SUPER_ADMIN.id },
           {
             $set: {
               name: SEED_SUPER_ADMIN.name,
               mobileNo: SEED_SUPER_ADMIN.mobileNo,
+              password: SEED_SUPER_ADMIN.password,
               userType: 'admin',
-              aadharNumber: SEED_SUPER_ADMIN.aadharNumber,
               isSuperAdmin: true,
             },
           }
         );
         action = 'updated';
-        details.push(`Verified and updated Super Admin ${SEED_SUPER_ADMIN.name} in MongoDB`);
+        details.push(`Updated Super Admin ${SEED_SUPER_ADMIN.name} in MongoDB`);
         console.log(`✅ Verified and synced Super Admin "${SEED_SUPER_ADMIN.name}" in MongoDB.`);
       }
 
-      // Ensure food_requests collection is accessible
-      const reqCol = db.collection('food_requests');
-      const reqCount = await reqCol.countDocuments();
-      details.push(`Food requests table verified (${reqCount} total records)`);
-
-      console.log('🎉 MongoDB Seeding completed successfully!');
-      return {
-        success: true,
-        mode: 'mongodb',
-        admin: SEED_SUPER_ADMIN,
-        action,
-        details,
-      };
+      return { success: true, mode: 'mongodb', admin: SEED_SUPER_ADMIN, action, details };
     } catch (err: any) {
-      console.error('❌ Seeding failed:', err.message);
+      console.error('❌ MongoDB seeding failed:', err.message);
       return {
         success: false,
         mode: 'mongodb',
         admin: SEED_SUPER_ADMIN,
         action: 'already_exists',
         details,
-        error: err.message || 'Seeding error',
+        error: err.message || 'Unknown seeding error',
       };
     } finally {
       if (client) {
@@ -133,17 +113,15 @@ export async function runSeeding(explicitUri?: string): Promise<{
       }
     }
   } else {
-    // Local filesystem seeding
     console.log('⚠️  No MONGODB_URI found. Seeding local JSON data files...');
     const dataDir = path.join(process.cwd(), 'data');
     const usersFile = path.join(dataDir, 'users.json');
-    const reqFile = path.join(dataDir, 'food_requests.json');
 
     if (!fs.existsSync(dataDir)) {
       fs.mkdirSync(dataDir, { recursive: true });
     }
 
-    let usersList: any[] = [];
+    let usersList: Record<string, unknown>[] = [];
     if (fs.existsSync(usersFile)) {
       try {
         usersList = JSON.parse(fs.readFileSync(usersFile, 'utf-8'));
@@ -152,7 +130,9 @@ export async function runSeeding(explicitUri?: string): Promise<{
       }
     }
 
-    const index = usersList.findIndex((u: any) => u.cpsNo === SEED_SUPER_ADMIN.cpsNo);
+    const index = usersList.findIndex(
+      (u) => normalizeAppUser(u).id === SEED_SUPER_ADMIN.id
+    );
     let action: 'inserted' | 'updated' | 'already_exists' = 'already_exists';
 
     if (index === -1) {
@@ -161,42 +141,23 @@ export async function runSeeding(explicitUri?: string): Promise<{
       details.push(`Inserted Super Admin into local ${usersFile}`);
     } else {
       usersList[index] = {
-        ...usersList[index],
-        name: SEED_SUPER_ADMIN.name,
-        mobileNo: SEED_SUPER_ADMIN.mobileNo,
-        userType: 'admin',
-        aadharNumber: SEED_SUPER_ADMIN.aadharNumber,
-        isSuperAdmin: true,
+        ...normalizeAppUser(usersList[index]),
+        ...SEED_SUPER_ADMIN,
       };
       action = 'updated';
       details.push(`Updated Super Admin in local ${usersFile}`);
     }
 
     fs.writeFileSync(usersFile, JSON.stringify(usersList, null, 2), 'utf-8');
-
-    if (!fs.existsSync(reqFile)) {
-      fs.writeFileSync(reqFile, JSON.stringify([], null, 2), 'utf-8');
-      details.push(`Created empty food_requests.json`);
-    }
-
-    console.log(`✅ Seeded Super Admin "${SEED_SUPER_ADMIN.name}" into local storage.`);
-    return {
-      success: true,
-      mode: 'local_files',
-      admin: SEED_SUPER_ADMIN,
-      action,
-      details,
-    };
+    console.log(`✅ Local users file updated: ${usersFile}`);
+    return { success: true, mode: 'local_files', admin: SEED_SUPER_ADMIN, action, details };
   }
 }
 
-// Execute directly if run via CLI
 if (import.meta.url === `file://${process.argv[1]}`) {
   runSeeding()
     .then((res) => {
-      if (!res.success) {
-        process.exit(1);
-      }
+      if (!res.success) process.exit(1);
       process.exit(0);
     })
     .catch((e) => {

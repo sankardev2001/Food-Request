@@ -1,7 +1,7 @@
 import express, { Request, Response } from 'express';
 import path from 'path';
-import fs from 'fs';
 import cors from 'cors';
+import cookieParser from 'cookie-parser';
 import { createServer as createViteServer } from 'vite';
 import * as XLSX from 'xlsx';
 import { MongoClient } from 'mongodb';
@@ -9,28 +9,48 @@ import dotenv from 'dotenv';
 import { runMigration } from './scripts/migrate';
 import { runSeeding } from './scripts/seed';
 import { getFirebaseAdminDb } from './src/firebase-admin';
+import {
+  AppUserDoc,
+  MONGODB_DB_NAME,
+  SUPER_ADMIN_MOBILE,
+  normalizeAppUser,
+  normalizeMongoUri,
+  readLocalUsersFile,
+  isSuperAdminUser,
+  upsertUsersToMongo,
+  upsertFoodRequestsToMongo,
+  readLocalFoodRequestsFile,
+  DatabaseUnavailableError,
+} from './src/mongoHelpers';
+import { requireAuth, sanitizeUserForClient } from './src/authSecurity';
+import {
+  handleLoginRequest,
+  handleLogoutRequest,
+  handleMeRequest,
+  hashPasswordForStorage,
+} from './src/authHandlers';
+import {
+  buildFoodRequest,
+  canManageRequest,
+  normalizeBeneficiaryRole,
+  normalizeFoodRequestDoc,
+  normalizeMealType,
+  validateEmployerFoodBody,
+} from './src/foodRequestHelpers';
+import type { AuthTokenPayload } from './src/authSecurity';
 
 dotenv.config();
 
 const app = express();
 const PORT = 3000;
 
-app.use(cors());
+app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
+app.use(cookieParser());
 
 // ---------------- DATA MODELS ----------------
 
-export interface AppUserDoc {
-  id: string;
-  name: string;
-  cpsNo: string;
-  mobileNo: string;
-  password?: string;
-  userType: 'employer' | 'admin';
-  aadharNumber: string;
-  isSuperAdmin?: boolean;
-  createdAt: string;
-}
+export type { AppUserDoc };
 
 export interface FoodRequestDoc {
   id: string;
@@ -39,72 +59,38 @@ export interface FoodRequestDoc {
   requesterCps: string;
   requesterMobile: string;
   name: string;
-  aadharNumber: string;
+  aadharNumber?: string;
+  beneficiaryRole?: 'CPS' | 'Contractor';
   vegNonVeg: 'Veg' | 'Non-Veg';
   type: 'Breakfast' | 'Lunch' | 'Dinner' | 'Snacks' | string;
+  remarks?: string;
   createdAt: string;
   createdByRole?: string;
 }
 
-// ---------------- LOCAL STORAGE FALLBACK ----------------
-const DATA_DIR = path.join(process.cwd(), 'data');
-const USERS_FILE = path.join(DATA_DIR, 'users.json');
-const REQUESTS_FILE = path.join(DATA_DIR, 'food_requests.json');
+async function findRequestById(id: string): Promise<FoodRequestDoc | undefined> {
+  const all = await getAllRequests();
+  return all.find((r) => r.id === id);
+}
 
-// Exact super admin seeding requested by user:
-// Name: subash
-// CPS No : 1234
-// mobile number : 9500466927
 const SEED_SUPER_ADMIN: AppUserDoc = {
   id: 'usr-subash-superadmin',
   name: 'subash',
-  cpsNo: '1234',
-  mobileNo: '9500466927',
+  mobileNo: SUPER_ADMIN_MOBILE,
   password: '1234',
   userType: 'admin',
-  aadharNumber: '1234',
   isSuperAdmin: true,
   createdAt: new Date().toISOString(),
 };
 
-function ensureDataStorage() {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
-
-  // Seed Users table with ONLY the single super admin
-  if (!fs.existsSync(USERS_FILE)) {
-    fs.writeFileSync(USERS_FILE, JSON.stringify([SEED_SUPER_ADMIN], null, 2), 'utf-8');
-  } else {
-    // Ensure subash exists in users file
-    try {
-      const current = JSON.parse(fs.readFileSync(USERS_FILE, 'utf-8')) as AppUserDoc[];
-      const exists = current.some((u) => u.cpsNo.toUpperCase() === '1234');
-      if (!exists) {
-        current.unshift(SEED_SUPER_ADMIN);
-        fs.writeFileSync(USERS_FILE, JSON.stringify(current, null, 2), 'utf-8');
-      }
-    } catch {
-      fs.writeFileSync(USERS_FILE, JSON.stringify([SEED_SUPER_ADMIN], null, 2), 'utf-8');
-    }
-  }
-
-  // Food requests table (clean, empty or initialized)
-  if (!fs.existsSync(REQUESTS_FILE)) {
-    fs.writeFileSync(REQUESTS_FILE, JSON.stringify([], null, 2), 'utf-8');
-  }
-}
-
-ensureDataStorage();
-
 // ---------------- MONGODB CLIENT & HELPERS ----------------
 let mongoClient: MongoClient | null = null;
-let currentMongoUri: string = process.env.MONGODB_URI || '';
+let currentMongoUri: string = normalizeMongoUri(process.env.MONGODB_URI);
 let isMongoConnected = false;
 let mongoLastError: string | null = null;
 
 async function getMongoClient(overrideUri?: string): Promise<MongoClient | null> {
-  const uri = overrideUri || currentMongoUri || process.env.MONGODB_URI;
+  const uri = normalizeMongoUri(overrideUri || currentMongoUri || process.env.MONGODB_URI);
   if (!uri || uri.trim() === '') {
     return null;
   }
@@ -130,12 +116,12 @@ async function getMongoClient(overrideUri?: string): Promise<MongoClient | null>
       console.log('Connected successfully to MongoDB Atlas database!');
 
       // Ensure super admin exists in MongoDB users collection
-      const db = mongoClient.db('food_requester');
+      const db = mongoClient.db(MONGODB_DB_NAME);
       const usersCol = db.collection<AppUserDoc>('users');
-      const adminDoc = await usersCol.findOne({ cpsNo: '1234' });
+      const adminDoc = await usersCol.findOne({ id: 'usr-subash-superadmin' });
       if (!adminDoc) {
         await usersCol.insertOne({ ...SEED_SUPER_ADMIN });
-        console.log('Seeded super admin subash (CPS: 1234) to MongoDB users collection.');
+        console.log('Seeded super admin subash to MongoDB users collection.');
       }
     }
     return mongoClient;
@@ -147,160 +133,65 @@ async function getMongoClient(overrideUri?: string): Promise<MongoClient | null>
   }
 }
 
-// ---------------- DATABASE ACCESSORS: USERS TABLE ----------------
-async function getAllUsers(): Promise<AppUserDoc[]> {
+async function getDbOrThrow() {
   const client = await getMongoClient();
-  if (client && isMongoConnected) {
-    try {
-      const db = client.db('food_requester');
-      const docs = await db.collection<AppUserDoc>('users').find({}).sort({ createdAt: -1 }).toArray();
-      if (docs.length > 0) {
-        return docs.map((d) => ({
-          id: d.id,
-          name: d.name,
-          cpsNo: d.cpsNo,
-          mobileNo: d.mobileNo,
-          password: d.password,
-          userType: d.userType,
-          aadharNumber: d.aadharNumber,
-          isSuperAdmin: d.isSuperAdmin,
-          createdAt: d.createdAt,
-        }));
-      }
-    } catch (e) {
-      console.error('Error fetching users from MongoDB, using local fallback:', e);
-    }
+  if (!client || !isMongoConnected) {
+    throw new DatabaseUnavailableError(
+      mongoLastError
+        ? `Database unavailable: ${mongoLastError}`
+        : undefined
+    );
   }
+  return client.db(MONGODB_DB_NAME);
+}
 
-  // Fallback to local storage
-  try {
-    ensureDataStorage();
-    const raw = fs.readFileSync(USERS_FILE, 'utf-8');
-    return JSON.parse(raw) as AppUserDoc[];
-  } catch {
-    return [SEED_SUPER_ADMIN];
-  }
+// ---------------- DATABASE ACCESSORS: USERS TABLE (MongoDB only) ----------------
+async function getAllUsers(): Promise<AppUserDoc[]> {
+  const db = await getDbOrThrow();
+  const docs = await db.collection<AppUserDoc>('users').find({}).sort({ createdAt: -1 }).toArray();
+  return docs.map((d) => normalizeAppUser(d as unknown as Record<string, unknown>));
 }
 
 async function saveUser(user: AppUserDoc): Promise<AppUserDoc> {
-  const client = await getMongoClient();
-  if (client && isMongoConnected) {
-    try {
-      const db = client.db('food_requester');
-      await db.collection<AppUserDoc>('users').updateOne(
-        { id: user.id },
-        { $set: user },
-        { upsert: true }
-      );
-    } catch (e) {
-      console.error('MongoDB error saving user:', e);
-    }
-  }
-
-  // Always keep local file synchronized
-  ensureDataStorage();
-  const all = await getAllUsers();
-  const idx = all.findIndex((u) => u.id === user.id || u.cpsNo.toUpperCase() === user.cpsNo.toUpperCase());
-  if (idx >= 0) {
-    all[idx] = user;
-  } else {
-    all.unshift(user);
-  }
-  fs.writeFileSync(USERS_FILE, JSON.stringify(all, null, 2), 'utf-8');
+  const db = await getDbOrThrow();
+  await db.collection<AppUserDoc>('users').updateOne({ id: user.id }, { $set: user }, { upsert: true });
   return user;
 }
 
 async function deleteUserById(id: string): Promise<boolean> {
-  const client = await getMongoClient();
-  if (client && isMongoConnected) {
-    try {
-      const db = client.db('food_requester');
-      await db.collection<AppUserDoc>('users').deleteOne({ id });
-    } catch (e) {
-      console.error('MongoDB delete user error:', e);
-    }
-  }
-
-  ensureDataStorage();
-  const all = await getAllUsers();
-  const filtered = all.filter((u) => u.id !== id);
-  fs.writeFileSync(USERS_FILE, JSON.stringify(filtered, null, 2), 'utf-8');
+  const db = await getDbOrThrow();
+  await db.collection<AppUserDoc>('users').deleteOne({ id });
   return true;
 }
 
-// ---------------- DATABASE ACCESSORS: FOOD REQUESTS TABLE ----------------
+// ---------------- DATABASE ACCESSORS: FOOD REQUESTS TABLE (MongoDB only) ----------------
 async function getAllRequests(): Promise<FoodRequestDoc[]> {
-  const client = await getMongoClient();
-  if (client && isMongoConnected) {
-    try {
-      const db = client.db('food_requester');
-      const docs = await db.collection<FoodRequestDoc>('food_requests').find({}).sort({ createdAt: -1 }).toArray();
-      return docs.map((doc) => ({
-        id: doc.id,
-        date: doc.date,
-        requesterName: doc.requesterName,
-        requesterCps: doc.requesterCps,
-        requesterMobile: doc.requesterMobile,
-        name: doc.name,
-        aadharNumber: doc.aadharNumber,
-        vegNonVeg: doc.vegNonVeg,
-        type: doc.type,
-        createdAt: doc.createdAt,
-        createdByRole: doc.createdByRole,
-      }));
-    } catch (e) {
-      console.error('MongoDB fetch requests error:', e);
-    }
-  }
-
-  // Local fallback
-  try {
-    ensureDataStorage();
-    const raw = fs.readFileSync(REQUESTS_FILE, 'utf-8');
-    return JSON.parse(raw) as FoodRequestDoc[];
-  } catch {
-    return [];
-  }
+  const db = await getDbOrThrow();
+  const docs = await db
+    .collection<FoodRequestDoc>('food_requests')
+    .find({})
+    .sort({ createdAt: -1 })
+    .toArray();
+  return docs.map(
+    (doc) =>
+      normalizeFoodRequestDoc(doc as unknown as Record<string, unknown>) as FoodRequestDoc
+  );
 }
 
 async function saveRequest(reqDoc: FoodRequestDoc): Promise<FoodRequestDoc> {
-  const client = await getMongoClient();
-  if (client && isMongoConnected) {
-    try {
-      const db = client.db('food_requester');
-      await db.collection<FoodRequestDoc>('food_requests').insertOne({ ...reqDoc });
-    } catch (e) {
-      console.error('MongoDB insert request error:', e);
-    }
-  }
-
-  ensureDataStorage();
-  const all = await getAllRequests();
-  const existingIdx = all.findIndex((r) => r.id === reqDoc.id);
-  if (existingIdx >= 0) {
-    all[existingIdx] = reqDoc;
-  } else {
-    all.unshift(reqDoc);
-  }
-  fs.writeFileSync(REQUESTS_FILE, JSON.stringify(all, null, 2), 'utf-8');
-  return reqDoc;
+  const stored = normalizeFoodRequestDoc(
+    reqDoc as unknown as Record<string, unknown>
+  ) as FoodRequestDoc;
+  const db = await getDbOrThrow();
+  await db
+    .collection<FoodRequestDoc>('food_requests')
+    .updateOne({ id: stored.id }, { $set: stored }, { upsert: true });
+  return stored;
 }
 
 async function deleteRequestById(id: string): Promise<boolean> {
-  const client = await getMongoClient();
-  if (client && isMongoConnected) {
-    try {
-      const db = client.db('food_requester');
-      await db.collection<FoodRequestDoc>('food_requests').deleteOne({ id });
-    } catch (e) {
-      console.error('MongoDB delete request error:', e);
-    }
-  }
-
-  ensureDataStorage();
-  const all = await getAllRequests();
-  const filtered = all.filter((r) => r.id !== id);
-  fs.writeFileSync(REQUESTS_FILE, JSON.stringify(filtered, null, 2), 'utf-8');
+  const db = await getDbOrThrow();
+  await db.collection<FoodRequestDoc>('food_requests').deleteOne({ id });
   return true;
 }
 
@@ -311,7 +202,8 @@ app.get('/api/health', async (req: Request, res: Response) => {
   await getMongoClient();
   res.json({
     status: 'ok',
-    storage: isMongoConnected ? 'mongodb_atlas' : 'local_persistent_json',
+    storage: isMongoConnected ? 'mongodb_atlas' : 'unavailable',
+    databaseRequired: true,
     isMongoConnected,
     hasMongoUri: !!(currentMongoUri || process.env.MONGODB_URI),
     mongoLastError,
@@ -320,7 +212,7 @@ app.get('/api/health', async (req: Request, res: Response) => {
 });
 
 // MongoDB Connection diagnostics and interactive test endpoint
-app.post('/api/mongodb/test', async (req: Request, res: Response) => {
+app.post('/api/mongodb/test', requireAuth({ adminOnly: true }), async (req: Request, res: Response) => {
   const { uri } = req.body;
   if (!uri || typeof uri !== 'string' || !uri.startsWith('mongodb')) {
     return res.status(400).json({
@@ -336,7 +228,7 @@ app.post('/api/mongodb/test', async (req: Request, res: Response) => {
     await testClient.connect();
     const pingRes = await testClient.db('admin').command({ ping: 1 });
     const pingMs = Date.now() - start;
-    const db = testClient.db('food_requester');
+    const db = testClient.db(MONGODB_DB_NAME);
     const collections = await db.listCollections().toArray();
 
     res.json({
@@ -362,7 +254,7 @@ app.post('/api/mongodb/test', async (req: Request, res: Response) => {
 });
 
 // Switch active database to new MongoDB URI dynamically
-app.post('/api/mongodb/connect', async (req: Request, res: Response) => {
+app.post('/api/mongodb/connect', requireAuth({ adminOnly: true }), async (req: Request, res: Response) => {
   const { uri } = req.body;
   if (!uri) {
     return res.status(400).json({ success: false, error: 'URI required' });
@@ -371,21 +263,10 @@ app.post('/api/mongodb/connect', async (req: Request, res: Response) => {
   try {
     const client = await getMongoClient(uri);
     if (client && isMongoConnected) {
-      // Sync local users and requests to MongoDB
-      const localUsers = await getAllUsers();
-      const localRequests = await getAllRequests();
-      const db = client.db('food_requester');
-
-      for (const u of localUsers) {
-        await db.collection('users').updateOne({ id: u.id }, { $set: u }, { upsert: true });
-      }
-      for (const r of localRequests) {
-        await db.collection('food_requests').updateOne({ id: r.id }, { $set: r }, { upsert: true });
-      }
-
       res.json({
         success: true,
-        message: 'Connected to MongoDB Atlas and synchronized users & requests tables!',
+        message:
+          'Connected to MongoDB Atlas. All reads and writes use the database only (use /api/db/sync-* to import legacy JSON once).',
       });
     } else {
       res.status(400).json({
@@ -399,7 +280,7 @@ app.post('/api/mongodb/connect', async (req: Request, res: Response) => {
 });
 
 // Trigger database migration (create collections, indexes, migrate legacy data)
-app.post('/api/db/migrate', async (req: Request, res: Response) => {
+app.post('/api/db/migrate', requireAuth({ adminOnly: true }), async (req: Request, res: Response) => {
   try {
     const { uri } = req.body;
     const result = await runMigration(uri || currentMongoUri || process.env.MONGODB_URI);
@@ -410,7 +291,7 @@ app.post('/api/db/migrate', async (req: Request, res: Response) => {
 });
 
 // Trigger database seeding (seed super admin subash)
-app.post('/api/db/seed', async (req: Request, res: Response) => {
+app.post('/api/db/seed', requireAuth({ adminOnly: true }), async (req: Request, res: Response) => {
   try {
     const { uri } = req.body;
     const result = await runSeeding(uri || currentMongoUri || process.env.MONGODB_URI);
@@ -420,120 +301,160 @@ app.post('/api/db/seed', async (req: Request, res: Response) => {
   }
 });
 
-// ---------------- USER AUTHENTICATION & DIRECTORY ----------------
-
-// Login endpoint checking registered users in the 'users' table
-app.post('/api/auth/login', async (req: Request, res: Response) => {
+// Upsert data/users.json into MongoDB Atlas
+app.post('/api/db/sync-users', requireAuth({ adminOnly: true }), async (req: Request, res: Response) => {
   try {
-    const { mobileNo, password } = req.body;
-
-    if (!mobileNo || !password) {
-      return res.status(400).json({ error: 'Mobile No and Password are required.' });
+    const localUsers = readLocalUsersFile();
+    if (localUsers.length === 0) {
+      return res.status(400).json({ success: false, error: 'No users found in data/users.json.' });
     }
 
-    const cleanMobile = String(mobileNo).trim();
-    const cleanPassword = String(password).trim().toUpperCase();
-
-    const allUsers = await getAllUsers();
-
-    // Check if user exists in the users table
-    const matchedUser = allUsers.find(
-      (u) => 
-        u.mobileNo.trim() === cleanMobile && 
-        (u.password === password || (!u.password && u.cpsNo.toUpperCase() === cleanPassword))
-    );
-
-    // If super admin subash
-    if (cleanMobile === '9500466927' && cleanPassword === '1234') {
-      const superAdminUser = {
-        name: 'subash',
-        cpsNo: '1234',
-        mobileNo: '9500466927',
-        role: 'admin' as const,
-        aadharNumber: '1234',
-        isSuperAdmin: true,
-        loggedInAt: new Date().toISOString(),
-      };
-      return res.json({ success: true, user: superAdminUser });
-    }
-
-    if (!matchedUser) {
-      return res.status(401).json({
-        error: `Invalid mobile number or password.`,
+    const client = await getMongoClient();
+    if (!client || !isMongoConnected) {
+      return res.status(400).json({
+        success: false,
+        error: mongoLastError || 'MongoDB is not connected. Set MONGODB_URI and check Atlas network access.',
       });
     }
 
-    const userProfile = {
-      id: matchedUser.id,
-      name: matchedUser.name,
-      cpsNo: matchedUser.cpsNo,
-      mobileNo: matchedUser.mobileNo,
-      role: matchedUser.userType,
-      aadharNumber: matchedUser.aadharNumber,
-      isSuperAdmin: matchedUser.isSuperAdmin,
-      loggedInAt: new Date().toISOString(),
-    };
-
-    res.json({ success: true, user: userProfile });
-  } catch (error: any) {
-    console.error('Login error:', error);
-    res.status(500).json({ error: 'Login authentication failed.' });
+    const db = client.db(MONGODB_DB_NAME);
+    const synced = await upsertUsersToMongo(db, localUsers);
+    const userCount = await db.collection('users').countDocuments();
+    res.json({ success: true, mode: 'mongodb', synced, userCount });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message || 'User sync failed.' });
   }
 });
 
-// GET /api/users - List all users in user table
-app.get('/api/users', async (req: Request, res: Response) => {
+app.post('/api/db/sync-requests', requireAuth({ adminOnly: true }), async (req: Request, res: Response) => {
   try {
-    const users = await getAllUsers();
+    const source = readLocalFoodRequestsFile().map((r) =>
+      normalizeFoodRequestDoc(r as unknown as Record<string, unknown>)
+    ) as FoodRequestDoc[];
+    if (source.length === 0) {
+      return res.status(400).json({ success: false, error: 'No food requests found to sync.' });
+    }
+
+    const client = await getMongoClient();
+    if (!client || !isMongoConnected) {
+      return res.status(400).json({
+        success: false,
+        error: mongoLastError || 'MongoDB is not connected.',
+      });
+    }
+
+    const db = client.db(MONGODB_DB_NAME);
+    const synced = await upsertFoodRequestsToMongo(db, source);
+    const requestCount = await db.collection('food_requests').countDocuments();
+    res.json({ success: true, mode: 'mongodb', synced, requestCount });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message || 'Request sync failed.' });
+  }
+});
+
+// ---------------- USER AUTHENTICATION & DIRECTORY ----------------
+
+app.post('/api/auth/login', async (req: Request, res: Response) => {
+  try {
+    await handleLoginRequest(req, res, { getAllUsers, saveUser });
+  } catch (error: unknown) {
+    if (error instanceof DatabaseUnavailableError) {
+      return res.status(503).json({ success: false, error: error.message });
+    }
+    console.error('Login error:', error);
+    res.status(500).json({ success: false, error: 'Login authentication failed.' });
+  }
+});
+
+app.post('/api/auth/logout', (req: Request, res: Response) => {
+  handleLogoutRequest(req, res);
+});
+
+app.get('/api/auth/me', (req: Request, res: Response) => {
+  handleMeRequest(req, res);
+});
+
+app.get('/api/users', requireAuth({ adminOnly: true }), async (req: Request, res: Response) => {
+  try {
+    const users = (await getAllUsers()).map(sanitizeUserForClient);
     res.json({ success: true, count: users.length, users });
-  } catch (error: any) {
+  } catch (error: unknown) {
     res.status(500).json({ error: 'Failed to retrieve users.' });
   }
 });
 
-// POST /api/users - Add employee or admin (Stored in users table)
-app.post('/api/users', async (req: Request, res: Response) => {
+app.post('/api/users', requireAuth({ adminOnly: true }), async (req: Request, res: Response) => {
   try {
-    const { name, cpsNo, mobileNo, password, userType, aadharNumber } = req.body;
+    const { name, team, mobileNo, password, userType } = req.body;
 
-    if (!name || !cpsNo || !mobileNo || !password || !userType || !aadharNumber) {
+    if (!name || !mobileNo || !password || !userType) {
       return res.status(400).json({
-        error: 'All fields (Name, CPS No, Mobile Number, Password, User Type, Aadhar Number) are required.',
+        error: 'Full Name, Mobile Number, Password, and User Type are required.',
       });
     }
 
-    const cleanCps = String(cpsNo).trim().toUpperCase();
     const cleanMobile = String(mobileNo).trim();
 
     const existingUsers = await getAllUsers();
-    const duplicate = existingUsers.find((u) => u.cpsNo.toUpperCase() === cleanCps);
+    const duplicate = existingUsers.find((u) => u.mobileNo.trim() === cleanMobile);
     if (duplicate) {
       return res.status(400).json({
-        error: `A user with CPS No "${cleanCps}" already exists (${duplicate.name}).`,
+        error: `A user with mobile number "${cleanMobile}" already exists (${duplicate.name}).`,
       });
+    }
+
+    const hashed = await hashPasswordForStorage(String(password));
+    if (typeof hashed !== 'string') {
+      return res.status(400).json({ error: hashed.error });
     }
 
     const newUser: AppUserDoc = {
       id: `usr-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       name: name.trim(),
-      cpsNo: cleanCps,
+      team: team != null ? String(team).trim() : '',
       mobileNo: cleanMobile,
-      password: String(password).trim(),
+      password: hashed,
       userType: userType === 'admin' ? 'admin' : 'employer',
-      aadharNumber: String(aadharNumber).trim(),
       isSuperAdmin: false,
       createdAt: new Date().toISOString(),
     };
 
     const saved = await saveUser(newUser);
-    res.status(201).json({ success: true, user: saved });
+    res.status(201).json({ success: true, user: sanitizeUserForClient(saved) });
   } catch (error: any) {
     res.status(500).json({ error: 'Failed to create user in user table.' });
   }
 });
 
-// PUT /api/users/:id/password - Update user password
-app.put('/api/users/:id/password', async (req: Request, res: Response) => {
+// PUT /api/users/:id - Update user profile (admin)
+app.put('/api/users/:id', requireAuth({ adminOnly: true }), async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { name, team, mobileNo } = req.body;
+    const allUsers = await getAllUsers();
+    const target = allUsers.find((u) => u.id === id);
+    if (!target) return res.status(404).json({ error: 'User not found.' });
+    if (isSuperAdminUser(target) && mobileNo && mobileNo.trim() !== target.mobileNo) {
+      return res.status(403).json({ error: 'Super Admin mobile cannot be changed here.' });
+    }
+    if (name) target.name = String(name).trim();
+    if (team !== undefined) target.team = String(team).trim();
+    if (mobileNo) {
+      const clean = String(mobileNo).trim();
+      const dup = allUsers.find((u) => u.id !== id && u.mobileNo.trim() === clean);
+      if (dup) {
+        return res.status(400).json({ error: `Mobile number already used by ${dup.name}.` });
+      }
+      target.mobileNo = clean;
+    }
+    const saved = await saveUser(target);
+    res.json({ success: true, user: sanitizeUserForClient(saved) });
+  } catch (error: unknown) {
+    res.status(500).json({ error: 'Failed to update user.' });
+  }
+});
+
+app.put('/api/users/:id/password', requireAuth({ adminOnly: true }), async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { newPassword } = req.body;
@@ -549,7 +470,11 @@ app.put('/api/users/:id/password', async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'User not found.' });
     }
 
-    target.password = newPassword.trim();
+    const hashed = await hashPasswordForStorage(newPassword);
+    if (typeof hashed !== 'string') {
+      return res.status(400).json({ error: hashed.error });
+    }
+    target.password = hashed;
     await saveUser(target);
 
     res.json({ success: true, message: `Password updated for ${target.name}.` });
@@ -559,7 +484,7 @@ app.put('/api/users/:id/password', async (req: Request, res: Response) => {
 });
 
 // DELETE /api/users/:id - Delete a user (Cannot delete super admin)
-app.delete('/api/users/:id', async (req: Request, res: Response) => {
+app.delete('/api/users/:id', requireAuth({ adminOnly: true }), async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const allUsers = await getAllUsers();
@@ -569,8 +494,8 @@ app.delete('/api/users/:id', async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'User not found.' });
     }
 
-    if (target.isSuperAdmin || target.cpsNo === '1234') {
-      return res.status(403).json({ error: 'Super Admin subash (CPS: 1234) cannot be deleted.' });
+    if (isSuperAdminUser(target)) {
+      return res.status(403).json({ error: 'Super Admin subash cannot be deleted.' });
     }
 
     await deleteUserById(id);
@@ -583,7 +508,7 @@ app.delete('/api/users/:id', async (req: Request, res: Response) => {
 // ---------------- FOOD REQUESTS ENDPOINTS ----------------
 
 // GET /api/requests/recent - Polling endpoint
-app.get('/api/requests/recent', async (req: Request, res: Response) => {
+app.get('/api/requests/recent', requireAuth({ adminOnly: true }), async (req: Request, res: Response) => {
   try {
     const since = req.query.since as string;
     if (!since) return res.status(400).json({ error: 'Since timestamp required.' });
@@ -598,10 +523,13 @@ app.get('/api/requests/recent', async (req: Request, res: Response) => {
 });
 
 // GET /api/requests - Get food requests with strict access control
-app.get('/api/requests', async (req: Request, res: Response) => {
+app.get('/api/requests', requireAuth(), async (req: Request, res: Response) => {
   try {
     const role = (req.query.role as string) || 'employer';
-    const cpsNo = (req.query.cpsNo as string) || '';
+    if (role === 'admin' && req.authUser?.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required.' });
+    }
+    const requesterMobile = (req.query.mobileNo as string) || (req.query.cpsNo as string) || '';
     const date = req.query.date as string;
     const search = ((req.query.search as string) || '').toLowerCase();
     const type = req.query.type as string;
@@ -612,10 +540,18 @@ app.get('/api/requests', async (req: Request, res: Response) => {
     // Employer can ONLY access their own food request submissions.
     // Employer CANNOT view the full master Excel sheet or other employees' requests.
     if (role === 'employer') {
-      if (!cpsNo) {
-        return res.status(403).json({ error: 'CPS No required for employer request access.' });
+      const mobile = (requesterMobile || req.authUser?.mobileNo || '').trim();
+      if (!mobile) {
+        return res.status(403).json({ error: 'Mobile number required for employer request access.' });
       }
-      all = all.filter((r) => r.requesterCps.toUpperCase() === cpsNo.toUpperCase());
+      if (req.authUser?.mobileNo !== mobile) {
+        return res.status(403).json({ error: 'You can only view your own requests.' });
+      }
+      all = all.filter(
+        (r) =>
+          r.requesterMobile.trim() === mobile ||
+          r.requesterCps.toUpperCase() === mobile.toUpperCase()
+      );
     }
 
     // Filter by date
@@ -634,7 +570,7 @@ app.get('/api/requests', async (req: Request, res: Response) => {
         (r) =>
           r.name.toLowerCase().includes(search) ||
           r.requesterName.toLowerCase().includes(search) ||
-          r.aadharNumber.includes(search) ||
+          (r.aadharNumber && r.aadharNumber.includes(search)) ||
           r.requesterCps.toLowerCase().includes(search) ||
           r.type.toLowerCase().includes(search)
       );
@@ -647,78 +583,203 @@ app.get('/api/requests', async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/requests - Submit new food request
-app.post('/api/requests', async (req: Request, res: Response) => {
+async function pushFoodRequestNotification(saved: FoodRequestDoc) {
+  const adminDb = getFirebaseAdminDb();
+  if (!adminDb) return;
   try {
-    const {
-      date,
-      requesterName,
-      requesterCps,
-      requesterMobile,
+    await adminDb.ref('/admin_notifications').push({
+      id: saved.id,
+      createdAt: saved.createdAt,
+      type: saved.type,
+      beneficiaryName: saved.name,
+      requesterName: saved.requesterName,
+      requesterMobile: saved.requesterMobile,
+    });
+  } catch (fbErr) {
+    console.error('Failed to push Firebase notification:', fbErr);
+  }
+}
+
+app.post('/api/requests', requireAuth(), async (req: Request, res: Response) => {
+  try {
+    const { date, name, vegNonVeg, type, remarks, aadharNumber, beneficiaryRole, createdByRole } =
+      req.body;
+    const validation = validateEmployerFoodBody({
       name,
       aadharNumber,
       vegNonVeg,
       type,
+      remarks,
+      beneficiaryRole,
+    });
+    if (!validation.ok) {
+      return res.status(400).json({ error: validation.error });
+    }
+    const auth = req.authUser!;
+    const newRequest = buildFoodRequest(auth as AuthTokenPayload, {
+      date,
+      name,
+      vegNonVeg,
+      type,
+      remarks,
+      aadharNumber,
+      beneficiaryRole,
       createdByRole,
-    } = req.body;
-
-    if (!name || !aadharNumber || !vegNonVeg || !type) {
-      return res.status(400).json({
-        error: 'All fields (Beneficiary Name, Aadhar, Veg/Non-Veg, Type) are required.',
-      });
-    }
-
-    // Valid meal types: Breakfast, Lunch, Dinner, Snacks
-    const validMealType = ['Breakfast', 'Lunch', 'Dinner', 'Snacks'].includes(type)
-      ? type
-      : type || 'Lunch';
-
-    const newRequest: FoodRequestDoc = {
-      id: `req-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-      date: date || new Date().toISOString().slice(0, 10),
-      requesterName: requesterName || name,
-      requesterCps: requesterCps || 'N/A',
-      requesterMobile: requesterMobile || 'N/A',
-      name: name.trim(),
-      aadharNumber: String(aadharNumber).trim(),
-      vegNonVeg: vegNonVeg === 'Non-Veg' ? 'Non-Veg' : 'Veg',
-      type: validMealType,
-      createdAt: new Date().toISOString(),
-      createdByRole: createdByRole || 'employer',
-    };
-
+    });
     const saved = await saveRequest(newRequest);
-    
-    // Push real-time notification to Firebase
-    const adminDb = getFirebaseAdminDb();
-    if (adminDb) {
-      try {
-        await adminDb.ref('/admin_notifications').push({
-          id: saved.id,
-          createdAt: saved.createdAt,
-          type: saved.type,
-          beneficiaryName: saved.name,
-          requesterName: saved.requesterName,
-          requesterMobile: saved.requesterMobile
-        });
-      } catch (fbErr) {
-        console.error('Failed to push Firebase notification:', fbErr);
-      }
-    }
-
+    await pushFoodRequestNotification(saved);
     res.status(201).json({ success: true, request: saved });
-  } catch (error: any) {
+  } catch (error: unknown) {
     res.status(500).json({ error: 'Failed to save food request.' });
   }
 });
 
-// DELETE /api/requests/:id - Admin only
-app.delete('/api/requests/:id', async (req: Request, res: Response) => {
+app.post('/api/requests/bulk', requireAuth(), async (req: Request, res: Response) => {
   try {
-    const { role } = req.query;
-    if (role !== 'admin') {
-      return res.status(403).json({ error: 'Access denied. Only Admins can delete records.' });
+    const { date, type, items } = req.body as {
+      date?: string;
+      type?: string;
+      items?: Array<{
+        name?: string;
+        aadharNumber?: string;
+        beneficiaryRole?: string;
+        vegNonVeg?: string;
+        remarks?: string;
+      }>;
+    };
+    if (!type || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'Meal type and at least one request row are required.' });
     }
+    const auth = req.authUser!;
+    const savedRows: FoodRequestDoc[] = [];
+    for (const item of items) {
+      const validation = validateEmployerFoodBody({
+        name: item.name,
+        aadharNumber: item.aadharNumber,
+        beneficiaryRole: item.beneficiaryRole,
+        vegNonVeg: item.vegNonVeg || 'Veg',
+        type,
+        remarks: item.remarks,
+      });
+      if (!validation.ok) continue;
+      const doc = buildFoodRequest(auth as AuthTokenPayload, {
+        date,
+        name: item.name!,
+        vegNonVeg: item.vegNonVeg || 'Veg',
+        type,
+        remarks: item.remarks,
+        aadharNumber: item.aadharNumber,
+        beneficiaryRole: item.beneficiaryRole,
+      });
+      const saved = await saveRequest(doc);
+      savedRows.push(saved);
+      await pushFoodRequestNotification(saved);
+    }
+    if (savedRows.length === 0) {
+      return res.status(400).json({ error: 'No valid rows with beneficiary name to submit.' });
+    }
+    res.status(201).json({ success: true, count: savedRows.length, requests: savedRows });
+  } catch (error: unknown) {
+    res.status(500).json({ error: 'Failed to save bulk food requests.' });
+  }
+});
+
+app.put('/api/requests/:id', requireAuth(), async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const existing = await findRequestById(id);
+    if (!existing) return res.status(404).json({ error: 'Request not found.' });
+    const auth = req.authUser!;
+    if (!canManageRequest(auth, existing)) {
+      return res.status(403).json({ error: 'You can only edit your own requests.' });
+    }
+    const { name, vegNonVeg, type, remarks, aadharNumber, beneficiaryRole } = req.body;
+    const validation = validateEmployerFoodBody({
+      name,
+      aadharNumber,
+      beneficiaryRole,
+      vegNonVeg,
+      type,
+      remarks,
+    });
+    if (!validation.ok) {
+      return res.status(400).json({ error: validation.error });
+    }
+    const updated: FoodRequestDoc = {
+      ...existing,
+      name: String(name).trim(),
+      aadharNumber: String(aadharNumber).trim(),
+      beneficiaryRole:
+        beneficiaryRole != null
+          ? normalizeBeneficiaryRole(String(beneficiaryRole))
+          : existing.beneficiaryRole || 'CPS',
+      vegNonVeg: vegNonVeg === 'Non-Veg' ? 'Non-Veg' : 'Veg',
+      type: normalizeMealType(type),
+      remarks: remarks != null ? String(remarks).trim() : existing.remarks || '',
+    };
+    const saved = await saveRequest(updated);
+    res.json({ success: true, request: saved });
+  } catch (error: unknown) {
+    res.status(500).json({ error: 'Failed to update request.' });
+  }
+});
+
+app.put('/api/requests/bulk', requireAuth(), async (req: Request, res: Response) => {
+  try {
+    const { items } = req.body as {
+      items?: Array<{
+        id: string;
+        name?: string;
+        aadharNumber?: string;
+        beneficiaryRole?: string;
+        vegNonVeg?: string;
+        type?: string;
+        remarks?: string;
+      }>;
+    };
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'Items array is required.' });
+    }
+    const auth = req.authUser!;
+    const updated: FoodRequestDoc[] = [];
+    for (const item of items) {
+      if (!item.id) continue;
+      const existing = await findRequestById(item.id);
+      if (!existing || !canManageRequest(auth, existing)) continue;
+      const validation = validateEmployerFoodBody({
+        name: item.name,
+        aadharNumber: item.aadharNumber ?? existing.aadharNumber,
+        beneficiaryRole: item.beneficiaryRole ?? existing.beneficiaryRole,
+        vegNonVeg: item.vegNonVeg,
+        type: item.type,
+        remarks: item.remarks,
+      });
+      if (!validation.ok) continue;
+      const doc: FoodRequestDoc = {
+        ...existing,
+        name: item.name!.trim(),
+        aadharNumber: String(item.aadharNumber ?? existing.aadharNumber ?? '').trim(),
+        beneficiaryRole: normalizeBeneficiaryRole(
+          item.beneficiaryRole ?? existing.beneficiaryRole ?? 'CPS'
+        ),
+        vegNonVeg: item.vegNonVeg === 'Non-Veg' ? 'Non-Veg' : 'Veg',
+        type: normalizeMealType(item.type!),
+        remarks: item.remarks != null ? String(item.remarks).trim() : existing.remarks || '',
+      };
+      updated.push(await saveRequest(doc));
+    }
+    if (updated.length === 0) {
+      return res.status(400).json({ error: 'No requests were updated.' });
+    }
+    res.json({ success: true, count: updated.length, requests: updated });
+  } catch (error: unknown) {
+    res.status(500).json({ error: 'Failed to bulk update requests.' });
+  }
+});
+
+// DELETE /api/requests/:id - Admin only
+app.delete('/api/requests/:id', requireAuth({ adminOnly: true }), async (req: Request, res: Response) => {
+  try {
 
     const { id } = req.params;
     await deleteRequestById(id);
@@ -729,27 +790,20 @@ app.delete('/api/requests/:id', async (req: Request, res: Response) => {
 });
 
 // GET /api/requests/export.xlsx - Full Excel Export (Admin Only)
-app.get('/api/requests/export.xlsx', async (req: Request, res: Response) => {
+app.get('/api/requests/export.xlsx', requireAuth({ adminOnly: true }), async (req: Request, res: Response) => {
   try {
-    const { role } = req.query;
-    if (role !== 'admin') {
-      return res.status(403).json({
-        error: 'Forbidden: Employers cannot view or download full excel sheets.',
-      });
-    }
-
     const all = await getAllRequests();
 
     // Exact columns matching wireframe:
-    // DATE | REQUESTER NAME | NAME | AADHAR NUMBER | VEG/NON-VEG | TYPE | CPS NO | MOBILE NO
     const rows = all.map((r) => ({
       DATE: r.date,
       'REQUESTER NAME': r.requesterName,
       NAME: r.name,
-      'AADHAR NUMBER': r.aadharNumber,
+      'AADHAR FIRST 4': r.aadharNumber || '',
+      ROLES: r.beneficiaryRole || 'CPS',
       'VEG/NON-VEG': r.vegNonVeg,
       TYPE: r.type,
-      'CPS NO': r.requesterCps,
+      REMARK: r.remarks || '',
       'MOBILE NO': r.requesterMobile,
     }));
 
@@ -758,10 +812,10 @@ app.get('/api/requests/export.xlsx', async (req: Request, res: Response) => {
       { wch: 14 },
       { wch: 22 },
       { wch: 22 },
-      { wch: 18 },
+      { wch: 14 },
       { wch: 16 },
       { wch: 18 },
-      { wch: 15 },
+      { wch: 24 },
       { wch: 16 },
     ];
 
@@ -785,13 +839,8 @@ app.get('/api/requests/export.xlsx', async (req: Request, res: Response) => {
 });
 
 // GET /api/stats - Admin KPIs
-app.get('/api/stats', async (req: Request, res: Response) => {
+app.get('/api/stats', requireAuth({ adminOnly: true }), async (req: Request, res: Response) => {
   try {
-    const { role } = req.query;
-    if (role !== 'admin') {
-      return res.status(403).json({ error: 'Forbidden' });
-    }
-
     const all = await getAllRequests();
     const todayStr = new Date().toISOString().slice(0, 10);
 
@@ -810,6 +859,13 @@ app.get('/api/stats', async (req: Request, res: Response) => {
   } catch (error: any) {
     res.status(500).json({ error: 'Failed to calculate stats.' });
   }
+});
+
+app.use((err: unknown, _req: Request, res: Response, next: () => void) => {
+  if (err instanceof DatabaseUnavailableError) {
+    return res.status(503).json({ success: false, error: err.message });
+  }
+  next();
 });
 
 // ---------------- VITE MIDDLEWARE / SPA SERVING ----------------
